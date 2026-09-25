@@ -1,11 +1,23 @@
 import * as THREE from "three";
-import type { FlowBand } from "../combat/FlowMeter";
+
+export type MeterBand = "idle" | "mid" | "max";
+
+export interface ScoreRow {
+  name: string;
+  archetype: string;
+  team: number;
+  kills: number;
+  deaths: number;
+  me: boolean;
+  human: boolean;
+  alive: boolean;
+}
 
 /**
- * Minimal gameplay HUD. Communicates state through colour, shape and motion
- * (crosshair, Flow bar, parry ring) with only the copy that helps the player
- * act — per the shell's UI-copy budget. Pure presentation; reads state, holds
- * none of it.
+ * Gameplay HUD. Communicates state through colour, shape and motion
+ * (crosshair, resource meter, parry ring) with only the copy that helps the
+ * player act — per the shell's UI-copy budget. Pure presentation; reads state,
+ * holds none of it. Swappable wholesale in the upcoming front-end pass.
  */
 export class Hud {
   readonly root: HTMLDivElement;
@@ -18,9 +30,21 @@ export class Hud {
   private hint: HTMLDivElement;
   private engage: HTMLDivElement;
   private bannerTimer = 0;
+  private skill: HTMLDivElement;
+  private feed: HTMLDivElement;
+  private feedItems: { el: HTMLDivElement; t: number }[] = [];
+  private status: HTMLDivElement;
+  private board: HTMLDivElement;
+  private center: HTMLDivElement;
+  private net: HTMLDivElement;
+  private markers: HTMLDivElement;
+  private markerEls: HTMLDivElement[] = [];
 
   constructor(parent: HTMLElement) {
     this.root = el("div", "position:fixed;inset:0;z-index:30;pointer-events:none;font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#eaf2ff;");
+
+    this.markers = el("div", "position:absolute;inset:0;overflow:hidden;");
+    this.root.appendChild(this.markers);
 
     this.crosshair = el("div",
       "position:absolute;left:50%;top:50%;width:10px;height:10px;margin:-5px 0 0 -5px;" +
@@ -32,7 +56,7 @@ export class Hud {
       "border:3px solid #37d6ff;opacity:0;transform:scale(1.3);transition:opacity .05s,transform .12s;");
     this.root.appendChild(this.parryRing);
 
-    // Flow bar (bottom-centre)
+    // Resource bar (bottom-centre)
     const flowWrap = el("div",
       "position:absolute;left:50%;bottom:34px;width:min(46vw,420px);height:12px;margin-left:calc(min(46vw,420px)/-2);" +
       "background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);border-radius:8px;overflow:hidden;");
@@ -40,29 +64,57 @@ export class Hud {
     flowWrap.appendChild(this.flowFill);
     this.root.appendChild(flowWrap);
     this.flowLabel = el("div",
-      "position:absolute;left:50%;bottom:50px;transform:translateX(-50%);font-size:11px;letter-spacing:.28em;opacity:.6;");
+      "position:absolute;left:50%;bottom:50px;transform:translateX(-50%);font-size:11px;letter-spacing:.28em;opacity:.6;white-space:nowrap;");
     this.flowLabel.textContent = "FLOW";
     this.root.appendChild(this.flowLabel);
+
+    this.skill = el("div",
+      "position:absolute;left:50%;bottom:14px;transform:translateX(-50%);font-size:11px;letter-spacing:.2em;opacity:.7;white-space:nowrap;");
+    this.root.appendChild(this.skill);
 
     this.objective = el("div",
       "position:absolute;left:22px;top:20px;font-size:13px;letter-spacing:.04em;line-height:1.5;opacity:.92;" +
       "text-shadow:0 1px 6px rgba(0,0,0,.6);white-space:pre;");
     this.root.appendChild(this.objective);
 
+    this.status = el("div",
+      "position:absolute;left:50%;top:14px;transform:translateX(-50%);font-size:15px;font-weight:700;letter-spacing:.12em;" +
+      "text-shadow:0 1px 8px rgba(0,0,0,.7);white-space:pre;text-align:center;");
+    this.root.appendChild(this.status);
+
+    this.feed = el("div", "position:absolute;right:18px;top:18px;display:grid;gap:4px;justify-items:end;font-size:12px;letter-spacing:.04em;");
+    this.root.appendChild(this.feed);
+
     this.banner = el("div",
       "position:absolute;left:50%;top:34%;transform:translate(-50%,-50%) scale(1);opacity:0;" +
-      "font-size:34px;font-weight:800;letter-spacing:.06em;text-shadow:0 2px 18px rgba(0,0,0,.7);transition:opacity .1s;");
+      "font-size:34px;font-weight:800;letter-spacing:.06em;text-shadow:0 2px 18px rgba(0,0,0,.7);transition:opacity .1s;white-space:nowrap;");
     this.root.appendChild(this.banner);
+
+    this.center = el("div",
+      "position:absolute;left:50%;top:60%;transform:translate(-50%,-50%);font-size:16px;letter-spacing:.14em;text-align:center;" +
+      "text-shadow:0 2px 12px rgba(0,0,0,.8);white-space:pre;");
+    this.root.appendChild(this.center);
 
     this.hint = el("div",
       "position:absolute;left:50%;bottom:70px;transform:translateX(-50%);font-size:13px;opacity:.6;text-align:center;" +
       "letter-spacing:.03em;max-width:80vw;");
     this.root.appendChild(this.hint);
 
+    this.net = el("div", "position:absolute;right:18px;bottom:14px;font:11px ui-monospace,Menlo,monospace;opacity:.55;white-space:pre;text-align:right;");
+    this.root.appendChild(this.net);
+
+    this.board = el("div",
+      "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);min-width:min(560px,90vw);display:none;" +
+      "background:rgba(6,9,16,.88);border:1px solid rgba(255,255,255,.14);border-radius:12px;padding:14px 18px;font-size:13px;");
+    this.root.appendChild(this.board);
+
     this.engage = el("div",
       "position:absolute;inset:0;display:grid;place-items:center;background:rgba(4,6,10,.55);" +
       "pointer-events:auto;cursor:pointer;font-size:20px;letter-spacing:.14em;text-align:center;");
-    this.engage.innerHTML = "<div style='display:grid;gap:10px'><div style='font-size:13px;opacity:.7;letter-spacing:.3em'>STARCUT</div><div>CLICK TO ENGAGE</div><div style='font-size:12px;opacity:.55;letter-spacing:.05em;line-height:1.7'>WASD move &nbsp;·&nbsp; Mouse look &nbsp;·&nbsp; Space jump<br>Left click / E — Cut &nbsp;·&nbsp; Right click / F — Parry &nbsp;·&nbsp; Esc — Pause</div></div>";
+    this.engage.innerHTML =
+      "<div style='display:grid;gap:10px'><div style='font-size:13px;opacity:.7;letter-spacing:.3em'>STARCUT</div><div>CLICK TO ENGAGE</div>" +
+      "<div style='font-size:12px;opacity:.55;letter-spacing:.05em;line-height:1.7'>WASD move &nbsp;·&nbsp; Mouse look &nbsp;·&nbsp; Space jump<br>" +
+      "Left click / E — Cut &nbsp;·&nbsp; Right click / F — Parry &nbsp;·&nbsp; Q — Skill &nbsp;·&nbsp; Tab — Scores &nbsp;·&nbsp; Esc — Pause</div></div>";
     this.root.appendChild(this.engage);
 
     parent.appendChild(this.root);
@@ -77,17 +129,29 @@ export class Hud {
     this.engage.style.display = v ? "grid" : "none";
   }
 
-  setFlow(value: number, band: FlowBand, color: THREE.Color): void {
+  /** The archetype's resource meter (FLOW / CHARGE / TEMPO), with its capstone callout. */
+  setMeter(value: number, band: MeterBand, color: THREE.Color, label = "FLOW", capstone = ""): void {
+    const hex = `#${color.getHexString()}`;
     this.flowFill.style.width = `${Math.round(value * 100)}%`;
-    this.flowFill.style.background = `#${color.getHexString()}`;
-    this.flowFill.style.boxShadow = band === "max" ? `0 0 16px #${color.getHexString()}` : "none";
-    this.flowLabel.style.opacity = band === "max" ? "1" : "0.6";
-    this.flowLabel.textContent = band === "max" ? "MAX FLOW" : "FLOW";
+    this.flowFill.style.background = hex;
+    this.flowFill.style.opacity = String(0.55 + value * 0.45);
+    this.flowFill.style.boxShadow = band === "max" || capstone ? `0 0 16px ${hex}` : "none";
+    this.flowLabel.style.opacity = band === "max" || capstone ? "1" : "0.6";
+    this.flowLabel.textContent = capstone || (band === "max" ? `MAX ${label}` : label);
   }
 
-  setCrosshair(mode: "ready" | "active" | "exposed"): void {
+  setSkill(text: string): void {
+    this.skill.textContent = text;
+  }
+
+  setCrosshair(mode: "ready" | "active" | "exposed" | "hidden"): void {
+    this.crosshair.style.display = mode === "hidden" ? "none" : "block";
     if (mode === "active") {
-      this.crosshair.style.cssText += ";width:26px;height:26px;margin:-13px 0 0 -13px;border-color:#fff;opacity:1;";
+      this.crosshair.style.width = "26px";
+      this.crosshair.style.height = "26px";
+      this.crosshair.style.margin = "-13px 0 0 -13px";
+      this.crosshair.style.borderColor = "#fff";
+      this.crosshair.style.opacity = "1";
     } else if (mode === "exposed") {
       this.crosshair.style.width = "14px";
       this.crosshair.style.height = "14px";
@@ -103,7 +167,8 @@ export class Hud {
     }
   }
 
-  setParryWindow(open: number): void {
+  setParryWindow(open: number, color = "#37d6ff"): void {
+    this.parryRing.style.borderColor = color;
     this.parryRing.style.opacity = open > 0 ? String(0.35 + open * 0.65) : "0";
     this.parryRing.style.transform = `scale(${1.3 - open * 0.35})`;
   }
@@ -116,12 +181,64 @@ export class Hud {
     this.hint.textContent = text;
   }
 
+  setStatus(text: string): void {
+    this.status.textContent = text;
+  }
+
+  setCenter(text: string): void {
+    this.center.textContent = text;
+  }
+
+  setNet(text: string): void {
+    this.net.textContent = text;
+  }
+
   showBanner(text: string, color: string): void {
     this.banner.textContent = text;
     this.banner.style.color = color;
     this.banner.style.opacity = "1";
     this.banner.style.transform = "translate(-50%,-50%) scale(1.08)";
     this.bannerTimer = 0.7;
+  }
+
+  pushFeed(html: string): void {
+    const item = el("div", "background:rgba(0,0,0,.45);padding:3px 8px;border-radius:6px;");
+    item.innerHTML = html;
+    this.feed.prepend(item);
+    this.feedItems.unshift({ el: item, t: 5 });
+    while (this.feedItems.length > 6) this.feedItems.pop()!.el.remove();
+  }
+
+  setScoreboard(visible: boolean, title = "", rows: ScoreRow[] = [], teamScores: number[] | null = null): void {
+    this.board.style.display = visible ? "block" : "none";
+    if (!visible) return;
+    const hdr = teamScores
+      ? `<div style="display:flex;justify-content:space-between;font-weight:800;letter-spacing:.1em;margin-bottom:8px"><span style="color:#9ff0ff">TEAM A ${teamScores[0]}</span><span>${esc(title)}</span><span style="color:#ff9a8a">${teamScores[1]} TEAM B</span></div>`
+      : `<div style="font-weight:800;letter-spacing:.1em;margin-bottom:8px">${esc(title)}</div>`;
+    const body = rows.map((r) =>
+      `<tr style="${r.me ? "color:#fff;font-weight:700" : "opacity:.85"}"><td style="padding:2px 8px">${teamScores ? (r.team === 0 ? "A" : "B") : ""}</td>` +
+      `<td>${esc(r.name)}${r.human ? "" : ' <span style="opacity:.45">bot</span>'}</td><td style="opacity:.7">${esc(r.archetype)}</td>` +
+      `<td style="text-align:right;padding:0 10px">${r.kills}</td><td style="text-align:right">${r.deaths}</td><td style="padding-left:8px;opacity:.6">${r.alive ? "" : "✕"}</td></tr>`
+    ).join("");
+    this.board.innerHTML = hdr +
+      `<table style="width:100%;border-collapse:collapse"><tr style="opacity:.5;font-size:11px"><td></td><td>NAME</td><td>KIT</td><td style="text-align:right;padding:0 10px">K</td><td style="text-align:right">D</td><td></td></tr>${body}</table>`;
+  }
+
+  /** Screen-space markers (revealed enemies), xy in px. */
+  setMarkers(points: { x: number; y: number; color: string; label: string }[]): void {
+    while (this.markerEls.length < points.length) {
+      const m = el("div", "position:absolute;transform:translate(-50%,-50%);font-size:10px;letter-spacing:.1em;text-align:center;");
+      this.markers.appendChild(m);
+      this.markerEls.push(m);
+    }
+    this.markerEls.forEach((m, i) => {
+      const p = points[i];
+      m.style.display = p ? "block" : "none";
+      if (!p) return;
+      m.style.left = `${p.x}px`;
+      m.style.top = `${p.y}px`;
+      m.innerHTML = `<div style="width:12px;height:12px;margin:0 auto;border:2px solid ${p.color};transform:rotate(45deg)"></div><div style="color:${p.color}">${esc(p.label)}</div>`;
+    });
   }
 
   update(dt: number): void {
@@ -132,11 +249,24 @@ export class Hud {
         this.banner.style.transform = "translate(-50%,-50%) scale(1)";
       }
     }
+    for (let i = this.feedItems.length - 1; i >= 0; i--) {
+      const it = this.feedItems[i];
+      it.t -= dt;
+      if (it.t < 1) it.el.style.opacity = String(Math.max(0, it.t));
+      if (it.t <= 0) {
+        it.el.remove();
+        this.feedItems.splice(i, 1);
+      }
+    }
   }
 
   dispose(): void {
     this.root.remove();
   }
+}
+
+export function esc(s: string): string {
+  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 }
 
 function el(tag: string, css: string): HTMLDivElement {

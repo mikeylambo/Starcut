@@ -24,7 +24,21 @@ export type StarcutAudioEvent =
   | "hit.taken"
   | "bot.windup"
   | "bot.strike"
-  | "dummy.spawn";
+  | "dummy.spawn"
+  | "enemy.lunge"
+  | "swing"
+  | "stance"
+  | "riposte"
+  | "execute"
+  | "marker.throw"
+  | "reveal"
+  | "cascade"
+  | "shroud"
+  | "death"
+  | "respawn"
+  | "trade"
+  | "footstep"
+  | "ui.tick";
 
 interface Voice {
   bus: Exclude<AudioBusName, string> | AudioBusName;
@@ -96,7 +110,8 @@ export class StarcutAudio implements AudioSystem {
   }
 
   /** Semantic entry point used across gameplay. */
-  emit(event: StarcutAudioEvent): void {
+  emit(event: StarcutAudioEvent, volume = 1): void {
+    if (volume <= 0.01) return;
     const voice = VOICES[event];
     if (!voice) return;
     const ctx = this.ensureContext();
@@ -104,7 +119,7 @@ export class StarcutAudio implements AudioSystem {
     const bus = this.busGains.get(voice.bus) ?? this.busGains.get("sfx");
     if (!bus) return;
     const out = ctx.createGain();
-    out.gain.value = 1;
+    out.gain.value = Math.min(1, volume);
     out.connect(bus);
     voice.build(ctx, out, ctx.currentTime);
   }
@@ -180,6 +195,100 @@ function noise(
 }
 
 const VOICES: Record<StarcutAudioEvent, Voice> = {
+  "enemy.lunge": {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      noise(ctx, out, now, { dur: 0.2, gain: 0.26, hp: 700, lp: 3600 });
+      tone(ctx, out, now, { type: "sawtooth", from: 160, to: 70, dur: 0.18, gain: 0.12 });
+    }
+  },
+  swing: {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      noise(ctx, out, now, { dur: 0.1, gain: 0.22, hp: 1800, lp: 7000 });
+      noise(ctx, out, now, { dur: 0.1, gain: 0.18, hp: 1500, lp: 6000, delay: 0.05 });
+    }
+  },
+  stance: {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      tone(ctx, out, now, { type: "triangle", from: 440, to: 660, dur: 0.12, gain: 0.12 });
+      tone(ctx, out, now, { type: "sine", from: 880, dur: 0.3, gain: 0.05, attack: 0.05 });
+    }
+  },
+  riposte: {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      tone(ctx, out, now, { type: "square", from: 2200, to: 1100, dur: 0.12, gain: 0.16 });
+      tone(ctx, out, now, { type: "square", from: 1400, to: 300, dur: 0.16, gain: 0.2, delay: 0.05 });
+      noise(ctx, out, now, { dur: 0.12, gain: 0.34, hp: 1800, delay: 0.05 });
+    }
+  },
+  execute: {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      tone(ctx, out, now, { type: "sawtooth", from: 110, to: 40, dur: 0.5, gain: 0.3 });
+      tone(ctx, out, now, { type: "square", from: 1800, to: 200, dur: 0.24, gain: 0.2 });
+      noise(ctx, out, now, { dur: 0.3, gain: 0.4, hp: 900 });
+    }
+  },
+  "marker.throw": {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      tone(ctx, out, now, { type: "sine", from: 900, to: 1800, dur: 0.12, gain: 0.08 });
+    }
+  },
+  reveal: {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      tone(ctx, out, now, { type: "sine", from: 1200, dur: 0.08, gain: 0.1 });
+      tone(ctx, out, now, { type: "sine", from: 1600, dur: 0.14, gain: 0.1, delay: 0.08 });
+    }
+  },
+  cascade: {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      for (let i = 0; i < 3; i++) tone(ctx, out, now, { type: "triangle", from: 880 * (1 + i * 0.25), dur: 0.08, gain: 0.12, delay: i * 0.05 });
+    }
+  },
+  shroud: {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      tone(ctx, out, now, { type: "sine", from: 520, to: 180, dur: 0.6, gain: 0.08, attack: 0.1 });
+    }
+  },
+  death: {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      tone(ctx, out, now, { type: "sawtooth", from: 240, to: 40, dur: 0.6, gain: 0.26 });
+      noise(ctx, out, now, { dur: 0.4, gain: 0.3, lp: 1200 });
+    }
+  },
+  respawn: {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      tone(ctx, out, now, { type: "sine", from: 330, to: 660, dur: 0.3, gain: 0.08, attack: 0.08 });
+    }
+  },
+  trade: {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      tone(ctx, out, now, { type: "square", from: 1760, to: 880, dur: 0.1, gain: 0.14 });
+      tone(ctx, out, now, { type: "square", from: 1320, to: 660, dur: 0.1, gain: 0.14, delay: 0.03 });
+    }
+  },
+  footstep: {
+    bus: "sfx",
+    build: (ctx, out, now) => {
+      noise(ctx, out, now, { dur: 0.05, gain: 0.14, lp: 700 });
+    }
+  },
+  "ui.tick": {
+    bus: "ui",
+    build: (ctx, out, now) => {
+      tone(ctx, out, now, { type: "sine", from: 1000, dur: 0.05, gain: 0.06 });
+    }
+  },
   "lunge.commit": {
     bus: "sfx",
     build: (ctx, out, now) => {

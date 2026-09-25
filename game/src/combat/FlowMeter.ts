@@ -44,7 +44,7 @@ export class FlowMeter {
 
     const moving = sample.moving && sample.speed > FLOW.moveThreshold;
     if (moving) {
-      const rel = clamp01((sample.speed - FLOW.moveThreshold) / (12 - FLOW.moveThreshold));
+      const rel = clamp01((sample.speed - FLOW.moveThreshold) / (FLOW.moveFullSpeed - FLOW.moveThreshold));
       const gain = (sample.airborne ? FLOW.airGainPerSec : FLOW.moveGainPerSec) * rel;
       this._value += gain * dt;
     } else {
@@ -52,6 +52,21 @@ export class FlowMeter {
     }
 
     this._value = clamp01(this._value);
+  }
+
+  /** Serializable state (snapshots, replays, divergence tests). */
+  getState(): [number, number] {
+    return [this._value, this.hitTimer];
+  }
+
+  setState(s: [number, number]): void {
+    this._value = s[0];
+    this.hitTimer = s[1];
+  }
+
+  /** Direct write (execute empties Flow; tests). */
+  set(value: number): void {
+    this._value = clamp01(value);
   }
 
   addKill(): void {

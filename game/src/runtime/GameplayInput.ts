@@ -20,6 +20,11 @@ export interface InputSnapshot {
   jump: boolean; // edge
   lunge: boolean; // edge
   parry: boolean; // edge
+  ability: boolean; // edge (archetype signature)
+  /** Free-cam descend (spectator/replay). */
+  descend: boolean;
+  /** Held: show the scoreboard. */
+  scoreboard: boolean;
   anyMove: boolean;
 }
 
@@ -30,7 +35,10 @@ const KEYS = {
   right: ["KeyD", "ArrowRight"],
   jump: ["Space"],
   lunge: ["KeyE", "KeyJ"],
-  parry: ["KeyF", "KeyK", "ShiftLeft", "ShiftRight"]
+  parry: ["KeyF", "KeyK", "ShiftLeft", "ShiftRight"],
+  ability: ["KeyQ", "KeyL"],
+  descend: ["KeyC", "ControlLeft"],
+  scoreboard: ["Tab"]
 };
 
 interface TouchStick {
@@ -50,15 +58,16 @@ export class GameplayInput {
   private jumpLatched = false;
   private lungeLatched = false;
   private parryLatched = false;
+  private abilityLatched = false;
 
   // previous frame's held state for gamepad edge detection
-  private prevPad = { jump: false, lunge: false, parry: false };
+  private prevPad = { jump: false, lunge: false, parry: false, ability: false };
 
   // touch state
   private moveStick: TouchStick | null = null;
   private lookPointerId: number | null = null;
   private lookAccum = { x: 0, y: 0 };
-  private touchButtons = { jump: false, lunge: false, parry: false };
+  private touchButtons = { jump: false, lunge: false, parry: false, ability: false };
   private touchButtonEls: HTMLElement[] = [];
 
   private detachers: Array<() => void> = [];
@@ -82,6 +91,8 @@ export class GameplayInput {
       if (KEYS.jump.includes(e.code)) { this.jumpLatched = true; e.preventDefault(); }
       if (KEYS.lunge.includes(e.code)) this.lungeLatched = true;
       if (KEYS.parry.includes(e.code)) this.parryLatched = true;
+      if (KEYS.ability.includes(e.code)) this.abilityLatched = true;
+      if (KEYS.scoreboard.includes(e.code)) e.preventDefault();
     };
     const ku = (e: KeyboardEvent) => this.keys.delete(e.code);
     const md = (e: MouseEvent) => {
@@ -157,6 +168,8 @@ export class GameplayInput {
     let padJump = false;
     let padLunge = false;
     let padParry = false;
+    let padAbility = false;
+    let padDescend = false;
     const pads = navigator.getGamepads?.() ?? [];
     for (const pad of pads) {
       if (!pad) continue;
@@ -167,19 +180,24 @@ export class GameplayInput {
       padJump = padJump || !!pad.buttons[0]?.pressed;
       padLunge = padLunge || !!pad.buttons[7]?.pressed || !!pad.buttons[2]?.pressed;
       padParry = padParry || !!pad.buttons[5]?.pressed || !!pad.buttons[1]?.pressed;
+      padAbility = padAbility || !!pad.buttons[4]?.pressed || !!pad.buttons[3]?.pressed;
+      padDescend = padDescend || !!pad.buttons[6]?.pressed;
     }
 
     const jump = this.jumpLatched || this.touchButtons.jump || (padJump && !this.prevPad.jump);
     const lunge = this.lungeLatched || this.touchButtons.lunge || (padLunge && !this.prevPad.lunge);
     const parry = this.parryLatched || this.touchButtons.parry || (padParry && !this.prevPad.parry);
+    const ability = this.abilityLatched || this.touchButtons.ability || (padAbility && !this.prevPad.ability);
 
     this.jumpLatched = false;
     this.lungeLatched = false;
     this.parryLatched = false;
+    this.abilityLatched = false;
+    this.touchButtons.ability = false;
     this.touchButtons.jump = false;
     this.touchButtons.lunge = false;
     this.touchButtons.parry = false;
-    this.prevPad = { jump: padJump, lunge: padLunge, parry: padParry };
+    this.prevPad = { jump: padJump, lunge: padLunge, parry: padParry, ability: padAbility };
 
     moveX = clamp(moveX, -1, 1);
     moveZ = clamp(moveZ, -1, 1);
@@ -192,6 +210,9 @@ export class GameplayInput {
       jump,
       lunge,
       parry,
+      ability,
+      descend: has(this.keys, KEYS.descend) || padDescend,
+      scoreboard: has(this.keys, KEYS.scoreboard),
       anyMove: Math.abs(moveX) > 0.05 || Math.abs(moveZ) > 0.05
     };
   }
@@ -203,7 +224,7 @@ export class GameplayInput {
     this.touchRoot.style.cssText =
       "position:fixed;inset:0;z-index:40;display:none;touch-action:none;pointer-events:none;";
 
-    const makeButton = (label: string, right: number, bottom: number, key: "jump" | "lunge" | "parry", color: string) => {
+    const makeButton = (label: string, right: number, bottom: number, key: "jump" | "lunge" | "parry" | "ability", color: string) => {
       const el = document.createElement("div");
       el.textContent = label;
       el.style.cssText =
@@ -223,6 +244,7 @@ export class GameplayInput {
     makeButton("CUT", 28, 118, "lunge", "#ff5a3c");
     makeButton("PARRY", 116, 48, "parry", "#37d6ff");
     makeButton("JUMP", 28, 206, "jump", "#8affc1");
+    makeButton("SKILL", 116, 136, "ability", "#b98cff");
 
     // Movement + look surfaces via a single fullscreen pointer handler.
     const zone = document.createElement("div");

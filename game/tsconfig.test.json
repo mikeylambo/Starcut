@@ -7,8 +7,22 @@
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
+    "types": ["node"],
     "outDir": ".testbuild",
     "rootDir": "."
   },
-  "include": ["src/config/tuning.ts", "src/combat/**/*.ts", "src/world/Physics.ts", "test/**/*.ts"]
+  "include": [
+    "src/config/**/*.ts",
+    "src/core/**/*.ts",
+    "src/combat/**/*.ts",
+    "src/world/Physics.ts",
+    "src/world/VoidglassData.ts",
+    "src/sim/**/*.ts",
+    "src/bots/**/*.ts",
+    "src/net/Interest.ts",
+    "src/net/Protocol.ts",
+    "src/net/Room.ts",
+    "src/net/PredictionClient.ts",
+    "test/**/*.ts"
+  ]
 }

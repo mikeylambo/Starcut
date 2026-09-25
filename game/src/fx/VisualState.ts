@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { FX } from "../config/tuning";
-import type { LungeSystem } from "../combat/LungeSystem";
+import type { Archetype } from "../sim/types";
+import { archetypeHue, glowIntensity } from "../render/EntityView";
 import type { RenderPipeline } from "../render/RenderPipeline";
 import { BurstPool } from "./Particles";
 
@@ -24,6 +25,11 @@ interface Afterimage {
   maxLife: number;
 }
 
+/** What the viewmodel reads from the lunge (or a Reflex swing). */
+export interface LungeView {
+  isActive: boolean;
+}
+
 export interface MotionSample {
   speed: number;
   grounded: boolean;
@@ -38,9 +44,11 @@ export interface MotionSample {
  * lunge, parry, motion) — gameplay never reads back from here — so art can be
  * swapped without touching trigger logic.
  *
- *  - Tri-colour Flow glow: cool blue idle -> amber mid -> hot white at max.
+ *  - Archetype glow: HUE is identity (Rusher cyan-blue, Ghost violet, Reflex
+ *    amber-gold); BRIGHTNESS and PULSE RATE carry that archetype's resource.
  *    Drives the blade edge, afterimages, and bloom strength.
- *  - Afterimage trail during a lunge; persistence scales with Flow.
+ *  - Afterimage trail during a lunge; persistence scales with the resource.
+ *  - Reflex carries twin blades.
  *  - Clean-kill colour-invert flash + shard burst.
  *  - Viewmodel poses: lunge thrust, whiff-exposed drop, parry guard.
  *  - Screen-grade pulses: red on hit, cyan on parry.
@@ -50,10 +58,9 @@ export class VisualState {
   private readonly bladeRig = new THREE.Group();
   private edgeMat: THREE.MeshStandardMaterial;
   private bodyMat: THREE.MeshStandardMaterial;
-  private glow = new THREE.Color(FX.glowIdle);
-  private readonly idle = new THREE.Color(FX.glowIdle);
-  private readonly mid = new THREE.Color(FX.glowMid);
-  private readonly max = new THREE.Color(FX.glowMax);
+  private glow = new THREE.Color(FX.hueRusher);
+  private readonly offRig = new THREE.Group();
+  private time = 0;
 
   private afterimages: Afterimage[] = [];
   private spawnAccum = 0;
@@ -122,6 +129,13 @@ export class VisualState {
     this.bladeRig.scale.setScalar(0.52);
     this.bladeRig.rotation.copy(POSE_IDLE.rot);
     this.viewmodel.add(this.bladeRig);
+    // Reflex off-hand blade: a mirrored copy on the left, hidden for the others.
+    const off = this.bladeRig.clone(true);
+    this.offRig.add(off);
+    this.offRig.scale.set(-1, 1, 1);
+    this.offRig.position.x = -0.6;
+    this.offRig.visible = false;
+    this.viewmodel.add(this.offRig);
     this.viewmodel.position.copy(POSE_IDLE.pos);
     camera.add(this.viewmodel);
 
@@ -135,17 +149,18 @@ export class VisualState {
     fxRoot.appendChild(this.invertEl);
   }
 
-  /** Current Flow glow colour (other systems, e.g. HUD, mirror it). */
+  /** Current glow colour (other systems, e.g. HUD, mirror it). */
   get glowColor(): THREE.Color {
     return this.glow;
   }
 
-  update(dt: number, flow: number, lunge: LungeSystem, motion: MotionSample): void {
-    // --- Tri-colour glow --------------------------------------------------
-    if (flow < 0.5) this.glow.copy(this.idle).lerp(this.mid, flow / 0.5);
-    else this.glow.copy(this.mid).lerp(this.max, (flow - 0.5) / 0.5);
+  update(dt: number, archetype: Archetype, flow: number, lunge: LungeView, motion: MotionSample): void {
+    // --- Archetype glow: hue = identity, brightness + pulse = resource ------
+    this.time += dt;
+    this.glow.set(archetypeHue(archetype));
     this.edgeMat.emissive.copy(this.glow);
-    this.edgeMat.emissiveIntensity = 1.8 + flow * 3.2;
+    this.edgeMat.emissiveIntensity = glowIntensity(flow, this.time);
+    this.offRig.visible = archetype === "reflex";
     // The whole frame blooms harder as Flow rises; max Flow gets a hint of fringe.
     this.pipeline.setBloomStrength(0.75 + flow * 0.55 + (this.flashTimer > 0 ? 0.8 : 0));
 
@@ -181,7 +196,7 @@ export class VisualState {
     });
   }
 
-  private animateViewmodel(dt: number, lunge: LungeSystem, m: MotionSample): void {
+  private animateViewmodel(dt: number, lunge: LungeView, m: MotionSample): void {
     // Sway lags behind look input, then springs back.
     this.sway.x += (-m.lookYaw * 1.6 - this.sway.x) * Math.min(1, dt * 10);
     this.sway.y += (m.lookPitch * 1.6 - this.sway.y) * Math.min(1, dt * 10);
@@ -213,6 +228,8 @@ export class VisualState {
 
     this.viewmodel.position.set(pos.x + this.sway.x + bobX, pos.y + this.sway.y - bobY, pos.z);
     this.bladeRig.rotation.set(rot.x, rot.y, rot.z);
+    const off = this.offRig.children[0];
+    if (off) off.rotation.set(rot.x, rot.y, rot.z);
   }
 
   private readonly tmpPos = new THREE.Vector3();
@@ -248,17 +265,27 @@ export class VisualState {
     }
   }
 
-  /** Clean kill: invert flash + shard burst in the Flow colour. */
-  onKill(at: THREE.Vector3, targetColor: THREE.Color): void {
-    this.flashTimer = FX.invertFlash;
-    this.invertEl.style.opacity = "0.9";
-    this.bursts.burst(at, targetColor, 26, 9, true, this.camera);
-    this.bursts.burst(at, this.glow, 10, 5, false, this.camera);
+  /** Clean kill: invert flash (your kills) + shard burst in the killer's glow. */
+  onKill(at: THREE.Vector3, targetColor: THREE.Color, mine = true, killerColor: THREE.Color = this.glow): void {
+    if (mine) {
+      this.flashTimer = FX.invertFlash;
+      this.invertEl.style.opacity = "0.9";
+    }
+    this.bursts.burst(at, targetColor, mine ? 26 : 16, 9, true, this.camera);
+    this.bursts.burst(at, killerColor, 10, 5, false, this.camera);
   }
 
-  onParry(at: THREE.Vector3): void {
-    this.pulseColor.set(0x7fe8ff);
-    this.pulse = 1;
+  /** You were cut down. */
+  onDeath(): void {
+    this.pulseColor.set(0xff2a2a);
+    this.pulse = 1.4;
+  }
+
+  onParry(at: THREE.Vector3, pulse = true): void {
+    if (pulse) {
+      this.pulseColor.set(0x7fe8ff);
+      this.pulse = 1;
+    }
     this.bursts.burst(at, new THREE.Color(0x9ff0ff), 18, 7, false, this.camera);
   }
 

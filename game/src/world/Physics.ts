@@ -95,3 +95,61 @@ export function pointInside(p: THREE.Vector3, s: Solid, inflate = 0): boolean {
     p.z >= s.min.z - inflate && p.z <= s.max.z + inflate
   );
 }
+
+/**
+ * Line of sight: true if the segment a->b passes through any solid (slab test).
+ * Exact ops only, so it agrees on every engine (interest management runs on the
+ * server; Ghost's first-strike memory runs in the shared sim).
+ */
+export function segmentBlocked(
+  ax: number, ay: number, az: number,
+  bx: number, by: number, bz: number,
+  solids: readonly Solid[]
+): boolean {
+  const dx = bx - ax, dy = by - ay, dz = bz - az;
+  for (const s of solids) {
+    let tmin = 0;
+    let tmax = 1;
+    // X slab
+    if (dx === 0) {
+      if (ax < s.min.x || ax > s.max.x) continue;
+    } else {
+      const inv = 1 / dx;
+      let t1 = (s.min.x - ax) * inv, t2 = (s.max.x - ax) * inv;
+      if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+      if (t1 > tmin) tmin = t1;
+      if (t2 < tmax) tmax = t2;
+      if (tmin > tmax) continue;
+    }
+    // Y slab
+    if (dy === 0) {
+      if (ay < s.min.y || ay > s.max.y) continue;
+    } else {
+      const inv = 1 / dy;
+      let t1 = (s.min.y - ay) * inv, t2 = (s.max.y - ay) * inv;
+      if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+      if (t1 > tmin) tmin = t1;
+      if (t2 < tmax) tmax = t2;
+      if (tmin > tmax) continue;
+    }
+    // Z slab
+    if (dz === 0) {
+      if (az < s.min.z || az > s.max.z) continue;
+    } else {
+      const inv = 1 / dz;
+      let t1 = (s.min.z - az) * inv, t2 = (s.max.z - az) * inv;
+      if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+      if (t1 > tmin) tmin = t1;
+      if (t2 < tmax) tmax = t2;
+      if (tmin > tmax) continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+/** True if the point is inside any solid. */
+export function pointInAnySolid(p: THREE.Vector3, solids: readonly Solid[]): boolean {
+  for (const s of solids) if (pointInside(p, s)) return true;
+  return false;
+}

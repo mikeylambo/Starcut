@@ -1,20 +1,15 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { makeSolid, type Solid } from "./Physics";
+import { makeSolid, type Solid } from "../world/Physics";
+import type { MapData } from "../world/VoidglassData";
 import {
   deckPlating,
   bulkheadPanels,
   surfaceMaterial,
   worldScaleBoxUVs,
   type SurfaceSet
-} from "../render/ProceduralTextures";
-import type { QualityTier } from "../render/RenderPipeline";
-
-export interface BotSpawn {
-  pos: THREE.Vector3;
-  patrol: THREE.Vector3[];
-  zeroG?: boolean;
-}
+} from "./ProceduralTextures";
+import type { QualityTier } from "./RenderPipeline";
 
 interface Debris {
   mesh: THREE.Mesh;
@@ -24,25 +19,21 @@ interface Debris {
 }
 
 /**
- * Voidglass — a single derelict-station interior.
+ * Voidglass — the RENDER BUILDER for the derelict-station interior.
  *
  * Two tight chambers joined by a short throat, a layered catwalk above the
  * first chamber, and one signature zero-gravity duel room behind a panoramic
- * window onto deep space. Sightlines are broken by cover and the throat so
- * nothing reads much longer than a lunge-and-a-half.
+ * window onto deep space.
  *
- * GAMEPLAY AUTHORITY: `solids` and `zeroG` only. Everything else here — the
- * textured meshes, windows, props, lights and debris — is presentation and is
- * never read by movement or combat. The solid layout is unchanged from the
- * greybox pass so the tuned feel is preserved.
+ * Presentation only. Gameplay authority (solids, zero-g volume, spawns) lives in
+ * world/VoidglassData.ts, which the Simulation reads on client and server. This
+ * builder still records the collider boxes its layout implies, purely so
+ * `checkAgainst()` can warn in dev if the drawn station and the sim's map drift.
  */
-export class VoidglassMap {
+export class VoidglassRender {
   readonly group = new THREE.Group();
-  readonly solids: Solid[] = [];
-  readonly zeroG: Solid;
-  readonly playerSpawn = { pos: new THREE.Vector3(0, 0, 9.5), yaw: Math.PI };
-  readonly dummySpawns: THREE.Vector3[] = [];
-  readonly botSpawns: BotSpawn[] = [];
+  /** Colliders implied by the drawn layout (dev drift check only). */
+  private readonly drawnSolids: Solid[] = [];
   readonly emissiveSeams: THREE.MeshStandardMaterial[] = [];
 
   private floorMat: THREE.MeshStandardMaterial;
@@ -95,8 +86,7 @@ export class VoidglassMap {
     this.buildLighting();
     this.buildChamberA();
     this.buildThroat();
-    this.zeroG = this.buildZeroGRoom();
-    this.buildSpawns();
+    this.buildZeroGRoom();
     this.mergeStatic();
   }
 
@@ -173,7 +163,7 @@ export class VoidglassMap {
   }
 
   private addSolid(cx: number, cy: number, cz: number, sx: number, sy: number, sz: number): void {
-    this.solids.push(makeSolid(new THREE.Vector3(cx, cy, cz), new THREE.Vector3(sx, sy, sz)));
+    this.drawnSolids.push(makeSolid(new THREE.Vector3(cx, cy, cz), new THREE.Vector3(sx, sy, sz)));
   }
 
   /** Emissive Voidglass seam strip (presentation only, never a collider). */
@@ -399,7 +389,7 @@ export class VoidglassMap {
     this.box(0, 0.005, -17.6, 6, 0.01, 0.8, this.hazardMat, false);
   }
 
-  private buildZeroGRoom(): Solid {
+  private buildZeroGRoom(): void {
     // Signature zero-g chamber: taller, violet-lit, a panoramic window to space.
     const w = 13, d = 13, h = 9, cz = -25;
     this.box(0, -0.5, cz, w, 1, d, this.floorMat);
@@ -453,33 +443,17 @@ export class VoidglassMap {
         baseY: pos.y
       });
     }
-
-    // The zero-g field volume (presentation-free trigger box)
-    return makeSolid(new THREE.Vector3(0, h / 2 + 0.4, cz), new THREE.Vector3(w - 1.2, h - 0.4, d - 1.2));
   }
 
-  private buildSpawns(): void {
-    this.dummySpawns.push(
-      new THREE.Vector3(2.5, 0, 2),
-      new THREE.Vector3(-1.5, 0, -6),
-      new THREE.Vector3(-5.4, 2.7, -7),
-      new THREE.Vector3(5, 0, -7)
-    );
-    this.botSpawns.push(
-      {
-        pos: new THREE.Vector3(3, 0, -6),
-        patrol: [new THREE.Vector3(3, 0, -6), new THREE.Vector3(-2, 0, -8), new THREE.Vector3(0, 0, 2)]
-      },
-      {
-        pos: new THREE.Vector3(0, 0, -14),
-        patrol: [new THREE.Vector3(-2, 0, -14), new THREE.Vector3(2, 0, -14)]
-      },
-      {
-        pos: new THREE.Vector3(0, 4.5, -25),
-        patrol: [new THREE.Vector3(-3, 4.5, -25), new THREE.Vector3(3, 5.5, -25), new THREE.Vector3(0, 6.5, -27)],
-        zeroG: true
-      }
-    );
+  /** Dev: warn if the drawn colliders drift from the sim's map data. */
+  checkAgainst(data: MapData): string[] {
+    const key = (s: Solid) => [s.min.x, s.min.y, s.min.z, s.max.x, s.max.y, s.max.z].map((n) => n.toFixed(3)).join(",");
+    const drawn = new Set(this.drawnSolids.map(key));
+    const sim = new Set(data.solids.map(key));
+    const problems: string[] = [];
+    for (const k of drawn) if (!sim.has(k)) problems.push(`drawn but not in sim: ${k}`);
+    for (const k of sim) if (!drawn.has(k)) problems.push(`in sim but not drawn: ${k}`);
+    return problems;
   }
 
   dispose(): void {

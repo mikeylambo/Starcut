@@ -1,7 +1,7 @@
 {
   "name": "starcut-workspace",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "workspaces": [
     "vendor/web-shell",
@@ -10,8 +10,9 @@
   "scripts": {
     "build:shell": "npm --workspace @slu/web-shell run build",
     "dev": "npm --workspace starcut run dev",
+    "server": "tsx server/index.ts",
     "build": "npm run build:shell && npm --workspace starcut run build",
-    "check": "npm run build:shell && npm --workspace starcut run check",
+    "check": "npm run build:shell && npm --workspace starcut run check && tsc -p server/tsconfig.json",
     "test": "npm --workspace starcut run test",
     "verify": "npm run check && npm run test && npm --workspace starcut run build",
     "preview": "npm --workspace starcut run preview"

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { dcos } from "../core/DetMath";
 
 /**
  * Pure geometry for the lunge-lock connect test, factored out of the runtime so
@@ -25,5 +26,5 @@ export function lungeConnects(
   if (dist > killRadius) return false;
   if (staggerOpen) return true;
   const dirCos = toTarget.normalize().dot(aim);
-  return dirCos >= Math.cos(coneHalfAngle);
+  return dirCos >= dcos(coneHalfAngle);
 }
