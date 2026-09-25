@@ -1,0 +1,19 @@
+{
+  "tiers": [
+    { "id": "recruit", "name": "Recruit", "react": 0.6, "aimError": 0.3, "parrySkill": 0.04, "aggression": 0.35, "turnRate": 5, "commitAlign": 0.97 },
+    { "id": "easy", "name": "Easy", "react": 0.42, "aimError": 0.2, "parrySkill": 0.12, "aggression": 0.55, "turnRate": 7, "commitAlign": 0.98 },
+    { "id": "medium", "name": "Medium", "react": 0.24, "aimError": 0.1, "parrySkill": 0.38, "aggression": 0.75, "turnRate": 9, "commitAlign": 0.985 },
+    { "id": "hard", "name": "Hard", "react": 0.12, "aimError": 0.04, "parrySkill": 0.7, "aggression": 0.9, "turnRate": 11, "commitAlign": 0.99 },
+    { "id": "elite", "name": "Elite", "react": 0.08, "aimError": 0.025, "parrySkill": 0.85, "aggression": 1, "turnRate": 13, "commitAlign": 0.992 }
+  ],
+  "defaultTier": 2,
+  "adaptive": {
+    "startTier": 0,
+    "maxTier": 2,
+    "stepUpIfRankInTopFraction": 0.5,
+    "stepDownIfRankInBottomFraction": 0.25
+  },
+  "offlineMatchRamp": { "startTier": 0, "stepEverySec": 50, "maxTier": 2 },
+  "parryLookahead": 0.28,
+  "standoff": { "holdAggression": 0.15 }
+}

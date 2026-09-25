@@ -1,11 +1,11 @@
 import { Room, type Peer } from "../src/net/Room";
 import { PredictionClient } from "../src/net/PredictionClient";
 import { LinkConditioner, type LinkProfile } from "../src/net/LinkConditioner";
-import { PROTOCOL_VERSION, type BeginMsg, type EndMsg, type SnapMsg } from "../src/net/Protocol";
+import { type BeginMsg, type EndMsg, type SnapMsg } from "../src/net/Protocol";
 import type { ReplayData } from "../src/sim/Replay";
 import { BotBrain } from "../src/bots/BotBrain";
 import { Rng } from "../src/core/Rng";
-import { MATCH } from "../src/config/tuning";
+import { PLAYLISTS } from "../src/content/Content";
 import { TICK } from "../src/sim/types";
 
 /** Simulated clock + scheduler shared by every conditioner in the run. */
@@ -33,7 +33,7 @@ interface Client {
   end: EndMsg | null;
 }
 
-export function runSoak(profile: LinkProfile, seconds: number, seed: number) {
+export function runSoak(profile: LinkProfile, seconds: number, seed: number, map = "voidglass") {
   const clock = new SimClock();
   const rng = new Rng(seed);
   const rand = () => rng.next();
@@ -43,12 +43,10 @@ export function runSoak(profile: LinkProfile, seconds: number, seed: number) {
     return l;
   };
   let replay: ReplayData | null = null;
-  const savedLimit = MATCH.timeLimitSec;
-  const savedScore = [MATCH.ffaScoreLimit, MATCH.teamScoreLimit];
-  MATCH.timeLimitSec = seconds;
-  MATCH.ffaScoreLimit = 999;
-  MATCH.teamScoreLimit = 999;
-  const room = new Room("SOAK", "ffa", true, { seed, onEnd: (r) => { replay = r; } });
+  const room = new Room("SOAK", {
+    isPublic: true, setup: { mode: "ffa", map, bots: 7, difficulty: 2 }, seed,
+    overrides: { timeLimitSec: seconds, scoreLimit: 999 }, onEnd: (i) => { replay = i.replay; }, now: () => clock.nowMs
+  });
 
   const clients: Client[] = [];
   for (let i = 0; i < 2; i++) {
@@ -72,11 +70,11 @@ export function runSoak(profile: LinkProfile, seconds: number, seed: number) {
     handlers.set("ping", (d) => { const t = (d as { t: number }).t; c.up.pass(() => room.pong(peer, t, clock.nowMs), false); });
     handlers.set("end", (d) => { c.end = d as EndMsg; });
     clients.push(c);
-    room.join(peer, { v: PROTOCOL_VERSION, name: `SOAK${i}`, archetype: (["rusher", "reflex"] as const)[i], how: "quick", queue: "ffa" });
+    room.join(peer, { profileId: `soak${i}`, name: `SOAK${i}`, archetype: (["rusher", "reflex"] as const)[i], faction: null });
   }
 
-  const maxTicks = Math.ceil((seconds + MATCH.quickStartDelay + 10) / TICK);
-  for (let t = 0; t < maxTicks && room.state !== "ended"; t++) {
+  const maxTicks = Math.ceil((seconds + PLAYLISTS.quickplay.lobbyCountdownSec + 10) / TICK);
+  for (let t = 0; t < maxTicks && room.state !== "results"; t++) {
     for (const c of clients) {
       if (!c.pc || !c.brain) continue;
       const msg = c.pc.predict(c.brain.think());
@@ -88,9 +86,6 @@ export function runSoak(profile: LinkProfile, seconds: number, seed: number) {
     room.step(clock.nowMs);
     for (const c of clients) c.pc?.reconcile();
   }
-  MATCH.timeLimitSec = savedLimit;
-  MATCH.ffaScoreLimit = savedScore[0];
-  MATCH.teamScoreLimit = savedScore[1];
 
   // Let the link drain (final snapshots, end messages).
   for (let i = 0; i < 60; i++) {

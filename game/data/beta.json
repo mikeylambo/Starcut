@@ -1,0 +1,11 @@
+{
+  "idleLimitSec": 20,
+  "reconnectWindowSec": 60,
+  "rematchVoteSec": 20,
+  "rematchMajority": 0.5,
+  "partyMax": 4,
+  "feedbackClipSec": 30,
+  "correctionLogMeters": 6,
+  "hiddenTickHz": 60,
+  "shadowSightRange": 7
+}

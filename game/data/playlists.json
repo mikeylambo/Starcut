@@ -1,0 +1,17 @@
+{
+  "quickplay": {
+    "modes": [
+      { "mode": "tdm", "weight": 3 },
+      { "mode": "ffa", "weight": 2 },
+      { "mode": "ctf", "weight": 2 },
+      { "mode": "elim", "weight": 2 },
+      { "mode": "clash", "weight": 1 }
+    ],
+    "maps": [
+      { "map": "voidglass", "weight": 2 },
+      { "map": "orbital-ring", "weight": 2 },
+      { "map": "derelict-wreck", "weight": 2 }
+    ],
+    "lobbyCountdownSec": 5
+  }
+}

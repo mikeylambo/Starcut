@@ -1,0 +1,30 @@
+{
+  "unlocks": [
+    { "id": "blade-default", "type": "blade", "name": "Standard Issue", "edge": "kit", "pattern": "plain", "default": true },
+    { "id": "blade-ember", "type": "blade", "name": "Ember Edge", "edge": "#ff6a2a", "pattern": "plain" },
+    { "id": "blade-prism", "type": "blade", "name": "Prism", "edge": "rainbow", "pattern": "plain" },
+    { "id": "blade-null", "type": "blade", "name": "Null Blade", "edge": "#ffffff", "pattern": "dark" },
+    { "id": "blade-vanguard", "type": "blade", "name": "Vanguard Standard", "edge": "#2fb8ff", "pattern": "striped" },
+    { "id": "blade-umbral", "type": "blade", "name": "Umbral Fang", "edge": "#9b5cff", "pattern": "dark" },
+    { "id": "blade-aegis", "type": "blade", "name": "Aegis Bulwark", "edge": "#ffb830", "pattern": "striped" },
+    { "id": "after-default", "type": "afterimage", "name": "Kit Glow", "color": "kit", "default": true },
+    { "id": "after-white", "type": "afterimage", "name": "Whiteout", "color": "#ffffff" },
+    { "id": "after-crimson", "type": "afterimage", "name": "Crimson Trail", "color": "#ff2a4a" },
+    { "id": "after-tricolor", "type": "afterimage", "name": "Tri-Color", "color": "tricolor" },
+    { "id": "kill-default", "type": "killEffect", "name": "Shatter", "style": "shards", "default": true },
+    { "id": "kill-invert", "type": "killEffect", "name": "Inversion", "style": "invert" },
+    { "id": "kill-nova", "type": "killEffect", "name": "Nova", "style": "nova" },
+    { "id": "kill-glyph", "type": "killEffect", "name": "Glyph Burn", "style": "glyph" }
+  ],
+  "challenges": [
+    { "id": "rusher-exec-10", "kit": "rusher", "name": "Executioner", "description": "Land 10 execute kills.", "stat": "executes", "target": 10, "reward": "blade-ember" },
+    { "id": "rusher-kills-50", "kit": "rusher", "name": "Momentum", "description": "50 kills as Rusher.", "stat": "kills", "target": 50, "reward": "after-crimson" },
+    { "id": "reflex-execparry-5", "kit": "reflex", "name": "Unbreakable", "description": "Parry 5 executes.", "stat": "executeParries", "target": 5, "reward": "blade-null" },
+    { "id": "reflex-ripostes-20", "kit": "reflex", "name": "Riposte Artist", "description": "20 riposte kills.", "stat": "ripostes", "target": 20, "reward": "kill-nova" },
+    { "id": "ghost-shroud-3", "kit": "ghost", "name": "Unseen Hand", "description": "3 kills while Shrouded.", "stat": "shroudKills", "target": 3, "reward": "after-white" },
+    { "id": "ghost-first-15", "kit": "ghost", "name": "First Strike", "description": "15 first-strike kills.", "stat": "firstStrikes", "target": 15, "reward": "kill-invert" },
+    { "id": "any-parries-25", "kit": "any", "name": "Deflector", "description": "25 clean parries with any kit.", "stat": "parries", "target": 25, "reward": "blade-prism" },
+    { "id": "any-matches-10", "kit": "any", "name": "Regular", "description": "Finish 10 online matches.", "stat": "matches", "target": 10, "reward": "after-tricolor" },
+    { "id": "any-lessons", "kit": "any", "name": "Graduate", "description": "Finish the Practice Range lessons.", "stat": "lessonsDone", "target": 1, "reward": "kill-glyph" }
+  ]
+}

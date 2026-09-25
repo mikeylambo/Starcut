@@ -1,0 +1,27 @@
+{
+  "lessons": [
+    { "id": "move", "title": "Movement", "kit": "rusher", "drill": "sandbox", "steps": [
+      { "text": "Move with {move}. You always sprint - keep moving to build Flow.", "goal": "flow", "value": 0.3 },
+      { "text": "Jump with {jump}, and jump again in the air.", "goal": "airborneTicks", "value": 25 }
+    ] },
+    { "id": "lunge", "title": "The Lunge", "kit": "rusher", "drill": "sandbox", "steps": [
+      { "text": "Aim at a blue target and press {cut} to lunge. One clean cut kills.", "goal": "cuts", "value": 2 }
+    ] },
+    { "id": "parry", "title": "The Parry", "kit": "rusher", "drill": "parry-lesson", "steps": [
+      { "text": "Red attackers telegraph their swing. Press {parry} the instant it lands.", "goal": "parries", "value": 2 },
+      { "text": "A parried attacker is staggered - cut it for free.", "goal": "cuts", "value": 1 }
+    ] },
+    { "id": "rusher", "title": "Rusher: Execute", "kit": "rusher", "drill": "execute-drill", "steps": [
+      { "text": "Sprint to max Flow. When EXECUTE READY shows, your lunge wins trades and is nearly unparryable.", "goal": "executes", "value": 1 }
+    ] },
+    { "id": "ghost", "title": "Ghost: Shroud", "kit": "ghost", "drill": "ghost-drill", "steps": [
+      { "text": "Stay out of their view cones to build Charge. At full Charge you are Shrouded.", "goal": "shrouded", "value": 1 },
+      { "text": "Strike a sentry that hasn't seen you - first strikes cut through parries.", "goal": "firstStrikes", "value": 1 }
+    ] },
+    { "id": "reflex", "title": "Reflex: Execute-Parry", "kit": "reflex", "drill": "reflex-lesson", "steps": [
+      { "text": "Counter-stance with {skill} as a red swing lands - the riposte is automatic.", "goal": "ripostes", "value": 1 },
+      { "text": "The Rusher is charging an execute. Parry with {parry} at the last instant - the window is tight.", "goal": "executeParries", "value": 1 }
+    ] }
+  ],
+  "finale": { "mode": "tdm", "map": "voidglass", "seconds": 150 }
+}

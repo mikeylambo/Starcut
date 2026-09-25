@@ -1,0 +1,17 @@
+{
+  "actions": [
+    { "id": "forward", "label": "Move forward", "keys": ["KeyW", "ArrowUp"] },
+    { "id": "back", "label": "Move back", "keys": ["KeyS", "ArrowDown"] },
+    { "id": "left", "label": "Strafe left", "keys": ["KeyA", "ArrowLeft"] },
+    { "id": "right", "label": "Strafe right", "keys": ["KeyD", "ArrowRight"] },
+    { "id": "jump", "label": "Jump", "keys": ["Space"], "pad": [0] },
+    { "id": "lunge", "label": "Cut / lunge", "keys": ["KeyE", "Mouse0", "KeyJ"], "pad": [7, 2] },
+    { "id": "parry", "label": "Parry", "keys": ["KeyF", "Mouse2", "ShiftLeft", "KeyK"], "pad": [5, 1] },
+    { "id": "ability", "label": "Skill", "keys": ["KeyQ", "KeyL"], "pad": [4, 3] },
+    { "id": "descend", "label": "Free-cam down", "keys": ["KeyC", "ControlLeft"], "pad": [6] },
+    { "id": "scoreboard", "label": "Scoreboard (hold)", "keys": ["Tab"], "pad": [8] },
+    { "id": "feedback", "label": "Send feedback", "keys": ["F8"] }
+  ],
+  "sensitivity": { "min": 0.2, "max": 3, "default": 1 },
+  "fov": { "min": 70, "max": 110, "default": 92 }
+}

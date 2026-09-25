@@ -1,5 +1,7 @@
 import * as THREE from "three";
-import { BOTAI, GHOST, LUNGE, REFLEX, RUSHER } from "../config/tuning";
+import { GHOST, LUNGE, REFLEX, RUSHER } from "../config/tuning";
+import { BOTS, type BotTier } from "../content/Content";
+import { CtfRules, ClashRules, RoundsRules, PHASE_STANDOFF, PHASE_INTERMISSION } from "../sim/Rules";
 import { Rng } from "../core/Rng";
 import { segmentBlocked } from "../world/Physics";
 import type { MapData } from "../world/VoidglassData";
@@ -29,23 +31,20 @@ import { TICK, emptyInput, pressed, quantizeInput, type SimInput } from "../sim/
  * can see — unseen first strikes get through).
  */
 
-export type Personality = "rusher" | "ghost" | "reflex" | "duelist" | "sentry";
+export type Personality = "rusher" | "ghost" | "reflex" | "duelist" | "sentry" | "executor";
 
-export const DIFFICULTY_LABELS = ["Easy", "Medium", "Hard"];
+export const DIFFICULTY_LABELS = BOTS.tiers.map((t) => t.name);
 
-interface Tier {
-  react: number;
-  aimError: number;
-  parrySkill: number;
+/** Difficulty tiers live in game/data/bots.json (Recruit .. Elite). */
+type Tier = BotTier;
+
+export function tierCount(): number {
+  return BOTS.tiers.length;
 }
 
 function tier(level: number): Tier {
-  const l = Math.max(0, Math.min(2, level | 0));
-  return [
-    { react: BOTAI.reactEasy, aimError: BOTAI.aimErrorEasy, parrySkill: BOTAI.parrySkillEasy },
-    { react: BOTAI.reactMedium, aimError: BOTAI.aimErrorMedium, parrySkill: BOTAI.parrySkillMedium },
-    { react: BOTAI.reactHard, aimError: BOTAI.aimErrorHard, parrySkill: BOTAI.parrySkillHard }
-  ][l];
+  const l = Math.max(0, Math.min(BOTS.tiers.length - 1, level | 0));
+  return BOTS.tiers[l];
 }
 
 // ---- navigation graph (derived once per map by line of sight) ----------------
@@ -175,6 +174,7 @@ export class BotBrain {
     }
 
     switch (this.personality) {
+      case "executor": return this.thinkExecutor();
       case "duelist": return this.thinkDuelist(peek, false);
       case "sentry": return this.thinkDuelist(peek, true);
       default: return this.thinkFighter();
@@ -186,19 +186,46 @@ export class BotBrain {
   private thinkFighter(): SimInput {
     const me = this.self;
     const p = this.personality;
-    const target = this.pickTarget();
+    let target = this.pickTarget();
     let moveDir = new THREE.Vector3();
     let wantAttack = false;
     let wantAbility = false;
     let jump = false;
 
-    if (!target) {
-      // Nobody known: roam the nav graph.
-      const g = navGraph(this.sim.map);
-      const goal = g.nodes[(this.seat * 5 + Math.floor(this.sim.tick / 600)) % g.nodes.length];
-      moveDir = this.pathDir(goal);
+    // ---- objectives (CTF, Clash, Elimination standoff) come first ----
+    const obj = this.objective();
+    if (obj?.carrying) {
+      // Flag carrier: can't strike. Run home; dash when an enemy closes in.
+      moveDir = this.pathDir(obj.pos);
       this.lookAlong(moveDir);
-      return this.finish(moveDir, false, false, false);
+      const chaser = target && target.feet.distanceTo(me.feet) < 7;
+      const dash = !!chaser && me.dashCd <= 0 && this.rng.next() < 0.3;
+      if (this.antiStuck(moveDir)) jump = true;
+      return this.finish(moveDir, false, false, dash, jump);
+    }
+    if (target && obj) {
+      // Only break off the objective for a close, visible fight.
+      const d = target.feet.distanceTo(me.feet);
+      const fightRange = obj.hold ? 6 : 8 + 10 * this.t.aggression;
+      if (d > fightRange || !hasLineOfSight(me, target, this.sim.map)) target = null;
+    } else if (target && !obj) {
+      // Low-aggression tiers don't chase across the map.
+      const d = target.feet.distanceTo(me.feet);
+      if (d > 12 + 40 * this.t.aggression && !hasLineOfSight(me, target, this.sim.map)) target = null;
+    }
+
+    if (!target) {
+      let goal: THREE.Vector3;
+      if (obj) goal = obj.pos;
+      else {
+        // Nobody known: roam the nav graph.
+        const g = navGraph(this.sim.map);
+        goal = g.nodes[(this.seat * 5 + Math.floor(this.sim.tick / 600)) % g.nodes.length];
+      }
+      moveDir = obj && obj.pos.distanceTo(me.feet) < (obj.hold ? 2.5 : 1.2) ? moveDir : this.pathDir(goal);
+      this.lookAlong(moveDir.lengthSq() > 0 ? moveDir : new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw)));
+      if (this.antiStuck(moveDir)) jump = true;
+      return this.finish(moveDir, false, false, false, jump);
     }
 
     const tc = target.center;
@@ -217,7 +244,7 @@ export class BotBrain {
         moveDir.add(side).normalize();
         if (me.lunge.state === "recovery") moveDir.multiplyScalar(-1); // exposed: back off
         const executeReady = me.flow.value >= RUSHER.executeThreshold;
-        const commit = dist <= reach * (executeReady ? 0.95 : 0.85) && aligned > 0.985;
+        const commit = dist <= reach * (executeReady ? 0.95 : 0.85) && aligned > this.t.commitAlign && this.rng.next() < 0.3 + 0.7 * this.t.aggression;
         if (commit && me.lunge.canStart()) wantAttack = true;
         if (me.grounded && this.rng.next() < 0.01) jump = true;
       } else {
@@ -309,9 +336,70 @@ export class BotBrain {
       }
       const reach = LUNGE.baseRange + LUNGE.flowRange * (e.archetype === "rusher" ? e.flow.value : 0);
       // Read: in reach, aiming at me, lunge ready — the commit is coming.
-      if (d <= reach + 1 && e.lunge.canStart() && this.inCone(e, me, 0.35) && this.rng.next() < BOTAI.parryLookahead) return e;
+      if (d <= reach + 1 && e.lunge.canStart() && this.inCone(e, me, 0.35) && this.rng.next() < BOTS.parryLookahead) return e;
     }
     return null;
+  }
+
+  // ---- objectives -------------------------------------------------------------
+
+  /**
+   * What the mode wants from this bot right now. `hold` = stay put and only
+   * fight up close (Elimination standoff, CTF defence).
+   */
+  private objective(): { pos: THREE.Vector3; carrying?: boolean; hold?: boolean } | null {
+    const me = this.self;
+    const rules = this.sim.rules;
+    if (rules instanceof CtfRules && rules.flags.length === 2) {
+      const own = rules.flags[me.team];
+      const enemyTeam = 1 - me.team;
+      const theirs = rules.flags[enemyTeam];
+      if (me.carrying >= 0) return { pos: this.sim.map.flags[me.team], carrying: true };
+      if (own.dropped) return { pos: own.pos }; // go return our flag
+      if (own.carrier >= 0) return { pos: this.sim.entities[own.carrier].feet }; // hunt our carrier
+      const teamSeats = this.sim.players.filter((p) => p.team === me.team).map((p) => p.id);
+      const role = teamSeats.indexOf(me.id) % 2; // 0 attack, 1 defend
+      if (theirs.carrier >= 0) {
+        const carrier = this.sim.entities[theirs.carrier];
+        return role === 0 ? { pos: carrier.feet } : { pos: own.pos, hold: true }; // escort / defend
+      }
+      return role === 0 ? { pos: theirs.pos } : { pos: own.pos, hold: true };
+    }
+    if (rules instanceof ClashRules) return { pos: rules.zonePos(this.sim) };
+    if (rules instanceof RoundsRules) {
+      if (rules.phase === PHASE_STANDOFF) {
+        // Standoff: hold near spawn; tension builds before anyone commits.
+        if (!this.anchor) this.anchor = me.feet.clone();
+        if (this.rng.next() > BOTS.standoff.holdAggression) return { pos: this.anchor, hold: true };
+      }
+      if (rules.phase === PHASE_INTERMISSION) return { pos: me.feet, hold: true };
+    }
+    return null;
+  }
+
+  /** Practice (Reflex lesson): run laps to max Flow, then execute at the player. */
+  private thinkExecutor(): SimInput {
+    const me = this.self;
+    const target = this.sim.players.find((p) => p.alive && this.sim.isEnemy(me, p)) ?? null;
+    if (!target) return this.finish(new THREE.Vector3(), false, false, false);
+    const to = new THREE.Vector3().subVectors(target.feet, me.feet).setY(0);
+    const d = to.length();
+    const ready = me.flow.value >= RUSHER.executeThreshold;
+    let move = new THREE.Vector3();
+    let attack = false;
+    if (!ready) {
+      // Circle the player at ~9 m to build Flow, in plain view.
+      const tangent = new THREE.Vector3(-to.z, 0, to.x).normalize();
+      move.copy(tangent).addScaledVector(to.clone().normalize(), (d - 9) * 0.15).normalize();
+      this.lookAlong(move);
+    } else {
+      this.aimAt(target.center, 0);
+      move.copy(to).normalize();
+      const reach = LUNGE.baseRange + LUNGE.flowRange * me.flow.value;
+      if (d <= reach * 0.8 && this.alignment(target.center) > 0.99 && me.lunge.canStart()) attack = true;
+    }
+    if (this.antiStuck(move)) return this.finish(move, attack, false, false, true);
+    return this.finish(move, attack, false, false);
   }
 
   // ---- practice personalities -------------------------------------------------
@@ -390,7 +478,7 @@ export class BotBrain {
   }
 
   private turnToward(wantYaw: number, wantPitch: number): void {
-    const max = BOTAI.turnRate * TICK * (0.6 + 0.2 * this.difficulty);
+    const max = this.t.turnRate * TICK;
     let dy = wantYaw - this.yaw;
     dy = Math.atan2(Math.sin(dy), Math.cos(dy));
     this.yaw += Math.max(-max, Math.min(max, dy));

@@ -3,7 +3,8 @@ import { BOT, FLOW, GHOST, LUNGE, MATCH, NET, PARRY, PLAYER, REFLEX, RUSHER } fr
 import { dcos, dlen } from "../core/DetMath";
 import { lungeConnects } from "../combat/strike";
 import { pointInAnySolid } from "../world/Physics";
-import { voidglassData, type MapData } from "../world/VoidglassData";
+import { mapById, spawnsFor, type MapData } from "../world/Maps";
+import { createRules, type ModeRules } from "./Rules";
 import { Entity, SWING_ACTIVE, SWING_READY, SWING_RECOVER, SWING_WINDUP, type EntitySnap } from "./Entity";
 import type { MatchConfig } from "./MatchConfig";
 import { applyKnockback, computeWish, integratePlayer, maxSpeedFor, updateZeroG } from "./Movement";
@@ -60,13 +61,24 @@ export interface SimEvents {
   cascade(e: Entity, left: number): void;
   shroud(e: Entity, on: boolean): void;
   matchEnd(): void;
+  /** A lethal hit connected but is held for the parry grace (instant hit feedback). */
+  strikeLanded(attacker: Entity, victim: Entity): void;
+  flagTaken(e: Entity, flagTeam: number): void;
+  flagDropped(flagTeam: number, x: number, y: number, z: number): void;
+  flagReturned(flagTeam: number, by: Entity | null): void;
+  flagCaptured(e: Entity, flagTeam: number): void;
+  zoneMoved(index: number): void;
+  roundStart(round: number): void;
+  roundEnd(winnerTeam: number, round: number): void;
 }
 
 export const NOOP_EVENTS: SimEvents = {
   lungeStart: () => {}, lungeWhiff: () => {}, swingStart: () => {}, parryAttempt: () => {},
   stance: () => {}, markerThrown: () => {}, reveal: () => {}, kill: () => {}, parry: () => {},
   hitTaken: () => {}, trade: () => {}, botWindup: () => {}, botStrike: () => {}, respawn: () => {},
-  resourceMax: () => {}, cascade: () => {}, shroud: () => {}, matchEnd: () => {}
+  resourceMax: () => {}, cascade: () => {}, shroud: () => {}, matchEnd: () => {},
+  strikeLanded: () => {}, flagTaken: () => {}, flagDropped: () => {}, flagReturned: () => {}, flagCaptured: () => {},
+  zoneMoved: () => {}, roundStart: () => {}, roundEnd: () => {}
 };
 
 export interface Marker {
@@ -118,6 +130,8 @@ export class Simulation {
   markers: Marker[] = [];
   readonly match: MatchState;
   readonly drill: DrillState = { started: false, timer: 0, done: false, title: "", lines: [] };
+  /** Mode rules (timed / ctf / clash / rounds / stocks / sandbox). */
+  readonly rules: ModeRules;
 
   /**
    * Melee lag compensation, set by the server per seat from measured latency:
@@ -136,7 +150,8 @@ export class Simulation {
   private historyCount = 0;
 
   constructor(readonly config: MatchConfig) {
-    this.map = voidglassData();
+    this.map = mapById(config.mapId);
+    this.rules = createRules(config.condition, config.rules);
     this.seatCount = config.seats.length;
     config.seats.forEach((s, i) => {
       const e = new Entity(i, "player", s.archetype, s.team, s.name);
@@ -156,11 +171,15 @@ export class Simulation {
       state: "playing",
       timeLeft: config.timeLimitSec,
       elapsed: 0,
-      teamScores: [0, 0],
+      teamScores: this.freshScores(),
       winnerTeam: -1,
       winnerId: -1
     };
     this.resetAll();
+  }
+
+  private freshScores(): number[] {
+    return new Array(Math.max(2, this.config.teamCount)).fill(0);
   }
 
   get players(): Entity[] {
@@ -174,16 +193,17 @@ export class Simulation {
     this.match.state = "playing";
     this.match.timeLeft = this.config.timeLimitSec;
     this.match.elapsed = 0;
-    this.match.teamScores = [0, 0];
+    this.match.teamScores = this.freshScores();
     this.match.winnerTeam = -1;
     this.match.winnerId = -1;
     Object.assign(this.drill, { started: false, timer: 0, done: false, title: "", lines: [] });
 
-    const usedA: number[] = [];
-    const usedB: number[] = [];
+    const used = [0, 0, 0];
     for (const e of this.entities) {
       e.seenBy = this.entities.map(() => NEVER);
       e.kills = e.deaths = e.cuts = e.parries = e.hitsTaken = e.executes = e.firstStrikes = e.ripostes = 0;
+      e.parryAttempts = e.graceParries = e.executeParries = e.shroudKills = e.captures = e.zoneTime = 0;
+      e.carrying = -1;
       e.revealedUntil = 0;
       e.revealedTeam = -1;
       if (!e.isPlayer) {
@@ -196,30 +216,39 @@ export class Simulation {
       e.resetCombat();
       e.resetResources();
       e.prevJump = e.prevAttack = e.prevParry = e.prevAbility = 0;
-      const sp = this.initialSpawn(e, usedA, usedB);
+      const sp = this.initialSpawn(e, used);
       this.placeAt(e, sp.pos, sp.yaw);
       e.graceT = 0;
     }
+    this.rules.reset(this);
     this.resetHistory();
   }
 
-  private initialSpawn(e: Entity, usedA: number[], usedB: number[]): { pos: THREE.Vector3; yaw: number } {
+  private initialSpawn(e: Entity, used: number[]): { pos: THREE.Vector3; yaw: number } {
     if (this.config.mode === "practice") {
       if (e.id === 0) return this.map.playerSpawn;
       const spots = this.map.dummySpawns;
       const p = spots[(e.id - 1) % spots.length];
       return { pos: p, yaw: 0 };
     }
-    const spawns = this.map.spawns;
-    if (this.config.teams) {
-      const side = e.team % 2;
-      const used = side === 0 ? usedA : usedB;
-      const pool = spawns.map((s, i) => ({ s, i })).filter(({ s }) => s.team === side || s.team === -1);
-      const pick = pool[used.length % pool.length];
-      used.push(pick.i);
-      return pick.s;
+    if (this.config.teamCount > 0) {
+      const pool = spawnsFor(this.map, this.config.teamCount, e.team);
+      const k = e.team % this.config.teamCount;
+      return pool[used[k]++ % pool.length];
     }
-    return spawns[e.id % spawns.length];
+    const pool = this.map.spawnsFfa;
+    return pool[e.id % pool.length];
+  }
+
+  /** Bring a player back at a spawn (respawns and round starts). */
+  respawnAt(e: Entity, pos: THREE.Vector3, yaw: number, grace: number): void {
+    this.placeAt(e, pos, yaw);
+    e.alive = true;
+    e.resetCombat();
+    e.resetResources();
+    e.carrying = -1;
+    e.graceT = grace;
+    this.fillHistory(e);
   }
 
   private placeAt(e: Entity, pos: THREE.Vector3, yaw: number): void {
@@ -350,7 +379,10 @@ export class Simulation {
     // Parry (every archetype). Not while a lunge or swing is committed.
     if (pressed(inp.parry, e.prevParry) && !e.lunge.isActive && e.swingPhase !== SWING_ACTIVE) {
       e.parryPressTick = this.tick; // defender timeline, even if the window is on cooldown
-      if (e.parry.start(PARRY.window)) ev.parryAttempt(e);
+      if (e.parry.start(PARRY.window)) {
+        e.parryAttempts += 1;
+        ev.parryAttempt(e);
+      }
     }
     // Reflex signature: counter-stance — a longer window that ripostes on success.
     if (e.archetype === "reflex" && pressed(inp.ability, e.prevAbility) && e.stanceCd <= 0 && e.swingPhase !== SWING_ACTIVE) {
@@ -368,7 +400,9 @@ export class Simulation {
   private startActions(e: Entity, inp: SimInput, ev: SimEvents): boolean {
     const jump = pressed(inp.jump, e.prevJump);
     if (!e.alive || e.staggered || e.doomed) return false; // a held hit may only parry
-    const attack = pressed(inp.attack, e.prevAttack);
+    const attack = pressed(inp.attack, e.prevAttack) && this.rules.canAttack(e);
+    const abilityPress = pressed(inp.ability, e.prevAbility);
+    const abilityTaken = abilityPress && this.rules.onAbility(e, this, ev);
 
     if (attack && !e.parry.isWindowOpen) {
       if (e.archetype === "reflex") {
@@ -392,6 +426,7 @@ export class Simulation {
           e.lungeCuts = 0;
           e.graceT = 0;
           if (e.archetype === "rusher" && e.flow.value >= RUSHER.executeThreshold) e.lunge.execute = true;
+          e.lungeFromShroud = e.shrouded;
           if (e.archetype === "ghost") {
             e.charge *= GHOST.strikeRetain; // striking gives you away
             if (e.shrouded) {
@@ -405,7 +440,7 @@ export class Simulation {
     }
 
     // Ghost signature: thrown marker.
-    if (e.archetype === "ghost" && pressed(inp.ability, e.prevAbility) && e.markerCd <= 0 && e.charge >= GHOST.markerCost) {
+    if (!abilityTaken && e.archetype === "ghost" && abilityPress && e.markerCd <= 0 && e.charge >= GHOST.markerCost) {
       e.charge -= GHOST.markerCost;
       e.markerCd = GHOST.markerCooldown;
       const aim = e.aimDir;
@@ -434,19 +469,19 @@ export class Simulation {
     }
     this.stepSwing(e, dt);
 
-    let dash: THREE.Vector3 | null = null;
-    if (e.cascadeLeft > 0) {
+    let dash: { dir: THREE.Vector3; speed: number } | null = this.rules.dash(e);
+    if (!dash && e.cascadeLeft > 0) {
       e.cascadeT -= dt;
       if (e.cascadeT <= 0) this.endCascade(e);
       else {
         const t = this.cascadeTarget(e);
         if (t) {
           const d = new THREE.Vector3().subVectors(t.center, e.center);
-          if (d.length() > REFLEX.swingRange * 0.7) dash = d.normalize();
+          if (d.length() > REFLEX.swingRange * 0.7) dash = { dir: d.normalize(), speed: REFLEX.cascadeDashSpeed };
         }
       }
     }
-    integratePlayer(e, wishDir, jump, maxSpeedFor(e), this.map, dt, dash);
+    integratePlayer(e, wishDir, jump, maxSpeedFor(e) * this.rules.speedMul(e), this.map, dt, dash);
   }
 
   private stepSwing(e: Entity, dt: number): void {
@@ -486,16 +521,11 @@ export class Simulation {
   }
 
   private stepLife(e: Entity, dt: number, ev: SimEvents): void {
-    if (e.alive || e.eliminated) return;
+    if (e.alive || e.eliminated || !this.rules.mayRespawn(e, this)) return;
     e.respawnT -= dt;
     if (e.respawnT > 0) return;
     const sp = this.chooseRespawn(e);
-    this.placeAt(e, sp.pos, sp.yaw);
-    e.alive = true;
-    e.resetCombat();
-    e.resetResources();
-    e.graceT = this.config.mode === "practice" ? 0 : MATCH.spawnGrace;
-    this.fillHistory(e);
+    this.respawnAt(e, sp.pos, sp.yaw, this.config.mode === "practice" ? 0 : MATCH.spawnGrace);
     ev.respawn(e);
   }
 
@@ -506,8 +536,8 @@ export class Simulation {
     }
     let best = 0;
     let bestScore = -Infinity;
-    this.map.spawns.forEach((s, i) => {
-      if (this.config.teams && s.team !== -1 && s.team !== e.team % 2) return;
+    const pool = spawnsFor(this.map, this.config.teamCount, e.team);
+    pool.forEach((s, i) => {
       let nearest = 1e6;
       for (const o of this.entities) {
         if (!o.alive || !o.isPlayer || !this.isEnemy(e, o)) continue;
@@ -518,7 +548,7 @@ export class Simulation {
         best = i;
       }
     });
-    return this.map.spawns[best];
+    return pool[best];
   }
 
   // ---- markers + ghost sight ------------------------------------------------
@@ -669,6 +699,8 @@ export class Simulation {
     this.parryReward(d, stance);
     if (a.alive) this.staggerPlayer(a, heavy);
     ev.parry(d, a, { stance, heavy, grace: true });
+    d.graceParries += 1;
+    if (heavy) d.executeParries += 1;
     if (stance && a.alive && a.center.distanceTo(d.center) <= REFLEX.riposteRange + 1) {
       this.applyKill({ a: d, t: a, kind: "riposte", unblockable: true, execute: false, firstStrike: false }, ev);
     }
@@ -778,6 +810,8 @@ export class Simulation {
         const stance = d.stanceT > 0;
         if (!parryingDefenders.has(d)) parryingDefenders.set(d, stance);
         ev.parry(d, c.a, { stance, heavy: c.execute, grace: check.grace });
+        if (check.grace) d.graceParries += 1;
+        if (c.execute) d.executeParries += 1;
         d.parries += 1;
         this.parryReward(d, stance);
         if (stance && c.a.center.distanceTo(d.center) <= REFLEX.riposteRange + 1) {
@@ -859,6 +893,7 @@ export class Simulation {
       t.doomTick = this.tick;
       t.doomHow = how;
       t.doomExecute = c.execute;
+      ev.strikeLanded(a, t);
       return;
     }
     this.finalizeKill(a, t, how, ev);
@@ -870,10 +905,9 @@ export class Simulation {
     else killPracticeBot(t);
 
     a.cuts += 1;
-    if (t.isPlayer) {
-      a.kills += 1;
-      if (this.config.teams && a.team >= 0 && a.team < 2) this.match.teamScores[a.team] += 1;
-    }
+    if (t.isPlayer) a.kills += 1;
+    if (a.lungeFromShroud && (how === "lunge" || how === "first-strike" || how === "execute")) a.shroudKills += 1;
+    if (this.config.mode !== "practice") this.rules.onKill(this, a, t, how, ev);
     if (how === "execute") a.executes += 1;
     if (how === "first-strike") a.firstStrikes += 1;
     if (how === "riposte") a.ripostes += 1;
@@ -963,32 +997,7 @@ export class Simulation {
       this.stepDrill(dt, ev);
       return;
     }
-    if (this.config.timeLimitSec > 0) m.timeLeft = Math.max(0, m.timeLeft - dt);
-
-    let over = this.config.timeLimitSec > 0 && m.timeLeft <= 0;
-    const limit = this.config.scoreLimit;
-    if (limit > 0) {
-      if (this.config.teams) over = over || m.teamScores.some((s) => s >= limit);
-      else over = over || this.players.some((p) => p.kills >= limit);
-    }
-    if (this.config.condition === "stocks") {
-      const standing = new Set(this.players.filter((p) => !p.eliminated).map((p) => p.team));
-      if (standing.size <= 1) over = true;
-    }
-    if (!over) return;
-
-    m.state = "over";
-    if (this.config.condition === "stocks") {
-      const standing = [...new Set(this.players.filter((p) => !p.eliminated).map((p) => p.team))];
-      m.winnerTeam = standing.length === 1 ? standing[0] : -1;
-    } else if (this.config.teams) {
-      const [a, b] = m.teamScores;
-      m.winnerTeam = a === b ? -1 : a > b ? 0 : 1;
-    }
-    const ranked = this.ranking();
-    m.winnerId = this.config.teams ? -1 : ranked[0]?.id ?? -1;
-    if (!this.config.teams && this.config.condition === "stocks") m.winnerId = m.winnerTeam;
-    ev.matchEnd();
+    this.rules.step(this, dt, ev);
   }
 
   /** Scoreboard order: kills desc, deaths asc, id asc. */
@@ -1052,7 +1061,8 @@ export class Simulation {
   getState(): SimState {
     return {
       t: this.tick,
-      m: [this.match.state === "over" ? 1 : 0, this.match.timeLeft, this.match.elapsed, this.match.teamScores[0], this.match.teamScores[1], this.match.winnerTeam, this.match.winnerId],
+      m: this.matchArray(),
+      o: this.rules.getState(),
       d: [this.drill.started ? 1 : 0, this.drill.timer, this.drill.done ? 1 : 0, this.drill.title, this.drill.lines.join("\n")],
       e: this.entities.map((e) => e.getState()),
       k: this.markers.map((m) => [m.owner, m.pos.x, m.pos.y, m.pos.z, m.vel.x, m.vel.y, m.vel.z, m.life])
@@ -1062,6 +1072,7 @@ export class Simulation {
   applyState(s: SimState): void {
     this.tick = s.t;
     this.applyMatchState(s.m);
+    this.rules.setState(s.o ?? []);
     const d = s.d;
     this.drill.started = d[0] === 1;
     this.drill.timer = d[1] as number;
@@ -1073,13 +1084,19 @@ export class Simulation {
     this.resetHistory();
   }
 
+  /** Match state as a flat array: [over, timeLeft, elapsed, winnerTeam, winnerId, ...teamScores]. */
+  matchArray(): number[] {
+    const m = this.match;
+    return [m.state === "over" ? 1 : 0, m.timeLeft, m.elapsed, m.winnerTeam, m.winnerId, ...m.teamScores];
+  }
+
   applyMatchState(m: number[]): void {
     this.match.state = m[0] === 1 ? "over" : "playing";
     this.match.timeLeft = m[1];
     this.match.elapsed = m[2];
-    this.match.teamScores = [m[3], m[4]];
-    this.match.winnerTeam = m[5];
-    this.match.winnerId = m[6];
+    this.match.winnerTeam = m[3];
+    this.match.winnerId = m[4];
+    this.match.teamScores = m.slice(5);
   }
 
   /** Stable JSON of the whole state (determinism + divergence tests). */
@@ -1090,6 +1107,8 @@ export class Simulation {
 
 export interface SimState {
   t: number;
+  /** Mode objective state (flags, zone, rounds). */
+  o?: number[];
   m: number[];
   d: (number | string)[];
   e: EntitySnap[];

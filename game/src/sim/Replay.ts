@@ -16,7 +16,9 @@ import { emptyInput, packInput, unpackInput, type Archetype, type PackedInput, t
 /** Out-of-band changes applied at a tick boundary, identically live and in replay. */
 export type SimCommand =
   | { type: "seat"; seat: number; archetype: Archetype; name: string; /** new controller: zero the press counters */ fresh?: boolean }
-  | { type: "lag"; seat: number; ticks: number };
+  | { type: "lag"; seat: number; ticks: number }
+  /** Resume a controller mid-count (a player back from away keeps their press counters). */
+  | { type: "counters"; seat: number; jump: number; attack: number; parry: number; ability: number };
 
 export interface KillRecord {
   tick: number;
@@ -39,6 +41,16 @@ export interface ReplayData {
 }
 
 export function applyCommand(sim: Simulation, c: SimCommand): void {
+  if (c.type === "counters") {
+    const e = sim.entities[c.seat];
+    if (e) {
+      e.prevJump = c.jump & 255;
+      e.prevAttack = c.attack & 255;
+      e.prevParry = c.parry & 255;
+      e.prevAbility = c.ability & 255;
+    }
+    return;
+  }
   if (c.type === "lag") {
     if (c.seat >= 0 && c.seat < sim.lagTicks.length) sim.lagTicks[c.seat] = Math.max(0, c.ticks | 0);
     return;

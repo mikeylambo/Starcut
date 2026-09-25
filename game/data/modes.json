@@ -1,0 +1,25 @@
+{
+  "ffa": {
+    "name": "Free-For-All", "short": "FFA", "description": "Everyone for themselves. First to the score limit.",
+    "teams": 0, "seats": 8, "condition": "timed", "timeLimitSec": 300, "scoreLimit": 20
+  },
+  "tdm": {
+    "name": "Team Deathmatch", "short": "TDM", "description": "Two teams of four. Kills score for your team.",
+    "teams": 2, "seats": 8, "condition": "timed", "timeLimitSec": 300, "scoreLimit": 40
+  },
+  "ctf": {
+    "name": "Capture the Flag", "short": "CTF", "description": "Take their flag home. The carrier can't strike but can dash - escort them.",
+    "teams": 2, "seats": 8, "condition": "ctf", "timeLimitSec": 480, "scoreLimit": 3,
+    "ctf": { "touchRadius": 1.6, "returnTimeSec": 15, "carrierSpeedMul": 0.92, "dashSpeed": 22, "dashTimeSec": 0.18, "dashCooldownSec": 2.5 }
+  },
+  "clash": {
+    "name": "Faction Clash", "short": "CLASH", "description": "Three factions, one map. Kills score, and so does holding the moving zone alone.",
+    "teams": 3, "seats": 9, "condition": "clash", "timeLimitSec": 360, "scoreLimit": 150,
+    "clash": { "killPoints": 2, "holdPointsPerSec": 1, "zoneMoveEverySec": 40 }
+  },
+  "elim": {
+    "name": "Elimination", "short": "ELIM", "description": "One life per round. Wipe the other team. First to 3 rounds.",
+    "teams": 2, "seats": 8, "condition": "rounds", "timeLimitSec": 0, "scoreLimit": 3,
+    "rounds": { "roundTimeSec": 100, "intermissionSec": 4, "standoffSec": 6 }
+  }
+}

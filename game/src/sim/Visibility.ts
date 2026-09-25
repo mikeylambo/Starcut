@@ -1,7 +1,7 @@
 import { GHOST } from "../config/tuning";
 import { segmentBlocked } from "../world/Physics";
 import { dcos } from "../core/DetMath";
-import type { MapData } from "../world/VoidglassData";
+import { inShadow, shadowSightRange, type MapData } from "../world/Maps";
 import type { Entity } from "./Entity";
 
 /**
@@ -28,6 +28,8 @@ export function inView(viewer: Entity, target: Entity, map: MapData): boolean {
   const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
   if (dist > GHOST.sightRange) return false;
   if (target.shrouded && dist > GHOST.shroudRange) return false;
+  // Shadow pockets (map data): you can't be picked out of the dark from afar.
+  if (dist > shadowSightRange() && inShadow(c, map)) return false;
   if (dist > 0.001) {
     const a = viewer.aimDir;
     const cos = (a.x * dx + a.y * dy + a.z * dz) / dist;

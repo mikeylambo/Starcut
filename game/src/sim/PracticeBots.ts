@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { BOT, PLAYER } from "../config/tuning";
 import { datan2, dlen } from "../core/DetMath";
-import { collide, pointInside } from "../world/Physics";
-import type { MapData } from "../world/VoidglassData";
+import { collide } from "../world/Physics";
+import { inZeroGField, type MapData } from "../world/Maps";
 import { ENTITY_HEIGHT, PRACTICE_BOT_RADIUS, type Entity } from "./Entity";
 
 /**
@@ -160,7 +160,7 @@ function steerToward(bot: Entity, goal: THREE.Vector3, speed: number, map: MapDa
 
 function applyGravity(bot: Entity, map: MapData, dt: number): void {
   center.set(bot.feet.x, bot.feet.y + ENTITY_HEIGHT * 0.55, bot.feet.z);
-  const inField = pointInside(center, map.zeroG);
+  const inField = inZeroGField(center, map);
   if (bot.zeroGBot || inField) {
     bot.vel.y *= 0.98;
   } else {

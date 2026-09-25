@@ -6,3 +6,4 @@ dist/
 vendor/web-shell/node_modules/
 server/data/
 dist-server/
+.tmp/

@@ -3,6 +3,7 @@ import { Rng } from "../src/core/Rng";
 import { NET } from "../src/config/tuning";
 import { Simulation, NOOP_EVENTS, type SimEvents, type KillHow } from "../src/sim/Simulation";
 import type { MatchConfig, SeatConfig } from "../src/sim/MatchConfig";
+import { modeDef } from "../src/content/Content";
 import { emptyInput, quantizeInput, type Archetype, type SimInput } from "../src/sim/types";
 import type { Entity } from "../src/sim/Entity";
 
@@ -10,9 +11,11 @@ import type { Entity } from "../src/sim/Entity";
 export function duelConfig(seats: { archetype: Archetype; team: number }[], mode: "ffa" | "team" = "team"): MatchConfig {
   return {
     mapId: "voidglass",
-    mode,
+    mode: mode === "team" ? "tdm" : "ffa",
     condition: "timed",
+    teamCount: mode === "team" ? 2 : 0,
     teams: mode === "team",
+    rules: modeDef(mode === "team" ? "tdm" : "ffa"),
     seats: seats.map((s, i): SeatConfig => ({ archetype: s.archetype, team: s.team, name: `P${i}` })),
     timeLimitSec: 0,
     scoreLimit: 0,

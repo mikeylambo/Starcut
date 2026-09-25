@@ -1,4 +1,4 @@
-﻿{
+{
   "compilerOptions": {
     "target": "ES2022",
     "module": "ES2022",
@@ -22,11 +22,11 @@
       "@slu/web-shell": [
         "../vendor/web-shell/dist/index.d.ts"
       ]
-    }
+    },
+    "resolveJsonModule": true
   },
   "include": [
     "src/**/*.ts",
     "vite.config.ts"
   ]
 }
-

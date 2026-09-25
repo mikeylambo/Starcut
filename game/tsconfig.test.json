@@ -3,13 +3,20 @@
     "target": "ES2022",
     "module": "CommonJS",
     "moduleResolution": "node",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "outDir": ".testbuild",
-    "rootDir": "."
+    "rootDir": ".",
+    "resolveJsonModule": true
   },
   "include": [
     "src/config/**/*.ts",
@@ -27,6 +34,10 @@
     "src/runtime/ChaseCamera.ts",
     "src/runtime/Spectate.ts",
     "src/runtime/GamepadMap.ts",
-    "test/**/*.ts"
+    "test/**/*.ts",
+    "src/content/**/*.ts",
+    "src/meta/**/*.ts",
+    "src/world/Maps.ts",
+    "data/**/*.json"
   ]
 }

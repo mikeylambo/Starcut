@@ -14,7 +14,7 @@ import { runSoak } from "./soakHarness";
 
 test("E2E online: bots + 2 predicted clients play a match to completion at Typical; Results arrive; the replay by ID reproduces the live match", () => {
   const { room, clients, replay } = runSoak(presetById("typical")!, 45, 777);
-  assert.equal(room.state, "ended");
+  assert.equal(room.state, "results");
   assert.ok(replay);
   for (const c of clients) {
     assert.ok(c.end, "Results (end message) reached the client");

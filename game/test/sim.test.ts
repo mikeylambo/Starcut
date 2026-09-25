@@ -30,7 +30,7 @@ test("Determinism: a scripted input sequence run twice ends in an identical stat
 });
 
 test("Determinism: 8-seat FFA with all archetypes, scripted twice, identical", () => {
-  const cfg = matchConfig("ffa", ["rusher", "ghost", "reflex", "rusher", "ghost", "reflex", "rusher", "ghost"], []);
+  const cfg = matchConfig("ffa", "voidglass", ["rusher", "ghost", "reflex", "rusher", "ghost", "reflex", "rusher", "ghost"], []);
   cfg.timeLimitSec = 0;
   const a = runScripted(cfg, 2400, 1234);
   const b = runScripted(cfg, 2400, 1234);
@@ -39,7 +39,7 @@ test("Determinism: 8-seat FFA with all archetypes, scripted twice, identical", (
 });
 
 test("getState/applyState round-trips and continues identically", () => {
-  const cfg = matchConfig("team", ["rusher", "ghost", "reflex", "rusher", "ghost", "reflex", "rusher", "ghost"], []);
+  const cfg = matchConfig("tdm", "voidglass", ["rusher", "ghost", "reflex", "rusher", "ghost", "reflex", "rusher", "ghost"], []);
   const a = new Simulation(cfg);
   const brains = a.players.map((_, i) => new BotBrain(a, i, 2, null, 7));
   for (let t = 0; t < 600; t++) a.step(brains.map((b) => b.think()), NOOP_EVENTS);
@@ -331,7 +331,7 @@ test("Lag compensation: a strike tests the target where the attacker saw it", ()
 // ---------------------------------------------------------------------------
 
 test("Replay: a recorded bot match re-simulates to the identical final state", () => {
-  const cfg = matchConfig("team", ["rusher", "ghost", "reflex", "rusher", "ghost", "reflex", "rusher", "ghost"], []);
+  const cfg = matchConfig("tdm", "voidglass", ["rusher", "ghost", "reflex", "rusher", "ghost", "reflex", "rusher", "ghost"], []);
   cfg.timeLimitSec = 25;
   const live = new Simulation(cfg);
   const brains = live.players.map((_, i) => new BotBrain(live, i, i % 3, null, 99));

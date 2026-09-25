@@ -1,13 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Room, type Peer } from "../src/net/Room";
+import { Room, type MemberInfo, type Peer } from "../src/net/Room";
+import type { MatchOverrides } from "../src/sim/MatchConfig";
+import { PLAYLISTS } from "../src/content/Content";
 import { PredictionClient } from "../src/net/PredictionClient";
 import { isVisibleTo, viewerFor } from "../src/net/Interest";
-import { PROTOCOL_VERSION, type HelloMsg, type SnapMsg, type BeginMsg, type EndMsg } from "../src/net/Protocol";
+import { type SnapMsg, type BeginMsg, type EndMsg } from "../src/net/Protocol";
 import { Simulation, NOOP_EVENTS } from "../src/sim/Simulation";
 import { ReplayPlayer, type ReplayData } from "../src/sim/Replay";
 import { SNAP_IDX } from "../src/sim/Entity";
-import { MATCH, NET } from "../src/config/tuning";
+import { NET } from "../src/config/tuning";
 import { Rng } from "../src/core/Rng";
 import { LinkConditioner } from "../src/net/LinkConditioner";
 import { emptyInput, packInput, type Archetype, type SimInput } from "../src/sim/types";
@@ -33,7 +35,7 @@ class FakePeer implements Peer {
   }
 }
 
-const hello = (archetype: Archetype, name = "HUMAN"): HelloMsg => ({ v: PROTOCOL_VERSION, name, archetype, how: "quick", queue: "ffa" });
+const hello = (archetype: Archetype, name = "HUMAN"): MemberInfo => ({ profileId: `p-${name}`, name, archetype, faction: null });
 
 // ---------------------------------------------------------------------------
 // interest management
@@ -76,11 +78,14 @@ test("Interest: teammates always; line of sight shows enemies; a shrouded Ghost 
 // the room
 // ---------------------------------------------------------------------------
 
-function harness(opts: { delay?: () => number; loss?: number; seed?: number; botFill?: boolean; onEnd?: (r: ReplayData, e: EndMsg) => void } = {}) {
+function harness(opts: { delay?: () => number; loss?: number; seed?: number; botFill?: boolean; overrides?: MatchOverrides; onEnd?: (r: ReplayData, e: EndMsg) => void } = {}) {
   let tick = 0;
   const rng = new Rng(opts.seed ?? 5);
   const netCfg = { now: () => tick, delay: opts.delay ?? (() => 0), loss: opts.loss ?? 0, rng };
-  const room = new Room("TEST", "ffa", true, { botFill: opts.botFill ?? true, seed: 1, onEnd: opts.onEnd });
+  const room = new Room("TEST", {
+    isPublic: true, setup: { mode: "ffa", map: "voidglass", bots: 7, difficulty: 2 }, botFill: opts.botFill ?? true, seed: 1,
+    overrides: opts.overrides, onEnd: opts.onEnd ? (i) => opts.onEnd!(i.replay, i.end) : undefined, now: () => tick * (1000 / 60)
+  });
   const toServer: Wire[] = [];
   return {
     room,
@@ -131,21 +136,18 @@ test("Room: input sanity — malformed, stale and flooding input is rejected; on
 test("Room: bots fill every empty seat; one human plays a full match to Results; the replay reproduces it", () => {
   let replay: ReplayData | null = null;
   let endMsg: EndMsg | null = null;
-  const savedLimit = MATCH.timeLimitSec;
-  MATCH.timeLimitSec = 20;
-  const h = harness({ onEnd: (r, e) => { replay = r; endMsg = e; } });
+  const h = harness({ overrides: { timeLimitSec: 20 }, onEnd: (r, e) => { replay = r; endMsg = e; } });
   const p = h.peer("solo");
   h.room.join(p, hello("reflex"));
-  for (let i = 0; i < 60 * (MATCH.quickStartDelay + 0.5); i++) h.advance();
+  for (let i = 0; i < 60 * (PLAYLISTS.quickplay.lobbyCountdownSec + 0.5); i++) h.advance();
   assert.equal(h.room.state, "live", "quick play auto-starts");
-  MATCH.timeLimitSec = savedLimit;
   const sim = h.room.sim!;
   let q = 0;
   for (let i = 0; i < 60 * 25 && h.room.state === "live"; i++) {
     h.room.input(p, { q: ++q, d: packInput(hold(sim.entities[0])) });
     h.advance();
   }
-  assert.equal(h.room.state, "ended");
+  assert.equal(h.room.state, "results");
   assert.ok(endMsg && replay, "end message + replay produced");
   const kills = (replay as unknown as ReplayData).kills.length;
   assert.ok(kills > 0, "the bots fought");

@@ -1,0 +1,14 @@
+{
+  "factions": [
+    { "id": "f-rusher", "name": "Vanguard", "placeholder": true, "kit": "rusher", "color": "#2fb8ff", "emblem": "chevron", "motto": "Never stop moving." },
+    { "id": "f-ghost", "name": "Umbral", "placeholder": true, "kit": "ghost", "color": "#9b5cff", "emblem": "crescent", "motto": "Strike from nowhere." },
+    { "id": "f-reflex", "name": "Aegis", "placeholder": true, "kit": "reflex", "color": "#ffb830", "emblem": "shield", "motto": "Let them come." }
+  ],
+  "switchCooldownHours": 72,
+  "war": { "pointsPerWin": 10, "pointsPerLoss": 3, "pointsPerKill": 1, "pointsPerCapture": 5, "pointsPerZoneSecond": 0.1 },
+  "cosmetics": [
+    { "faction": "f-rusher", "warPoints": 50, "unlock": "blade-vanguard" },
+    { "faction": "f-ghost", "warPoints": 50, "unlock": "blade-umbral" },
+    { "faction": "f-reflex", "warPoints": 50, "unlock": "blade-aegis" }
+  ]
+}

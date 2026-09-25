@@ -1,0 +1,12 @@
+{
+  "colorblind": {
+    "off": { "name": "Off", "ally": "#9ff0ff", "enemy": "#ff4a3a", "teams": ["#37d6ff", "#ff5a3c", "#8aff6a"] },
+    "deuteranopia": { "name": "Deuteranopia", "ally": "#5aa9ff", "enemy": "#ffb000", "teams": ["#3d8bff", "#ffb000", "#e8e8e8"] },
+    "protanopia": { "name": "Protanopia", "ally": "#4fa3ff", "enemy": "#f5d000", "teams": ["#2f7fff", "#f5d000", "#e8e8e8"] },
+    "tritanopia": { "name": "Tritanopia", "ally": "#2ee6d6", "enemy": "#ff4f8b", "teams": ["#18c8c0", "#ff4f8b", "#f2f2f2"] }
+  },
+  "teamGlyphs": ["▲", "■", "●"],
+  "teamNames": ["TEAM A", "TEAM B", "TEAM C"],
+  "reducedFlashing": { "flashScale": 0.15, "bloomSpikeScale": 0.2, "shakeScale": 0.4 },
+  "audioCueRange": 22
+}

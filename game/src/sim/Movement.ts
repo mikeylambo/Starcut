@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { PLAYER, LUNGE, REFLEX } from "../config/tuning";
 import { dcos, dsin } from "../core/DetMath";
-import { collide, pointInside } from "../world/Physics";
-import type { MapData } from "../world/VoidglassData";
+import { collide } from "../world/Physics";
+import { inZeroGField, type MapData } from "../world/Maps";
 import type { Entity } from "./Entity";
 import type { SimInput } from "./types";
 
@@ -37,7 +37,7 @@ export function computeWish(e: Entity, input: SimInput): THREE.Vector3 {
 }
 
 export function updateZeroG(e: Entity, map: MapData): void {
-  e.inZeroG = pointInside(e.eye, map.zeroG);
+  e.inZeroG = inZeroGField(e.eye, map);
 }
 
 /**
@@ -45,9 +45,12 @@ export function updateZeroG(e: Entity, map: MapData): void {
  * resource update (Phase 0 order). `jump` is this tick's jump press.
  * `dashTarget` overrides movement for a Reflex cascade dash.
  */
-export function integratePlayer(e: Entity, wishDir: THREE.Vector3, jump: boolean, maxSpeed: number, map: MapData, dt: number, dashDir: THREE.Vector3 | null): void {
-  if (dashDir) {
-    e.vel.copy(dashDir).multiplyScalar(REFLEX.cascadeDashSpeed);
+export function integratePlayer(e: Entity, wishDir: THREE.Vector3, jump: boolean, maxSpeed: number, map: MapData, dt: number, dash: { dir: THREE.Vector3; speed: number } | null): void {
+  const dashDir = dash ? dash.dir : null;
+  if (dash) {
+    const vy = e.vel.y;
+    e.vel.copy(dash.dir).multiplyScalar(dash.speed);
+    if (dash.dir.y === 0 && !e.inZeroG) e.vel.y = vy; // a flat dash keeps gravity
   } else if (e.lunge.isActive) {
     driveLunge(e, dt);
   } else if (e.inZeroG) {

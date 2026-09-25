@@ -1,0 +1,8 @@
+{
+  "defaultPreset": "typical",
+  "presets": {
+    "low": { "name": "Low", "tier": "low", "bloom": false, "maxDpr": 0.75, "shadows": false, "msaa": 0, "dust": 0.2, "decor": false, "dynamicLights": 2 },
+    "typical": { "name": "Typical", "tier": "low", "bloom": true, "maxDpr": 1.0, "shadows": false, "msaa": 0, "dust": 0.5, "decor": true, "dynamicLights": 6 },
+    "high": { "name": "High", "tier": "high", "bloom": true, "maxDpr": 1.5, "shadows": true, "msaa": 4, "dust": 1, "decor": true, "dynamicLights": 12 }
+  }
+}

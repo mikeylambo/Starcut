@@ -107,6 +107,22 @@ export class Entity {
   doomHow = "";
   doomExecute = false;
 
+  // --- objectives + telemetry/progression counters ---
+  /** CTF: team index of the flag this entity carries, or -1. */
+  carrying = -1;
+  /** CTF carrier dash: active time and cooldown (s). */
+  dashT = 0;
+  dashCd = 0;
+  /** The current lunge began while Shrouded (a "Shroud strike"). */
+  lungeFromShroud = false;
+  parryAttempts = 0;
+  graceParries = 0;
+  executeParries = 0;
+  shroudKills = 0;
+  captures = 0;
+  /** Clash: seconds spent holding the zone uncontested. */
+  zoneTime = 0;
+
   get doomed(): boolean {
     return this.doomBy >= 0;
   }
@@ -178,6 +194,8 @@ export class Entity {
     this.lungeCuts = 0;
     this.doomBy = -1;
     this.parryPressTick = -1e9;
+    this.dashT = 0;
+    this.lungeFromShroud = false;
   }
 
   resetResources(): void {
@@ -205,7 +223,9 @@ export class Entity {
       BOT_STATES.indexOf(this.botState), this.botTimer, this.patrolIndex,
       [this.kills, this.deaths, this.cuts, this.parries, this.hitsTaken, this.executes, this.firstStrikes, this.ripostes],
       this.lungeCuts, b(this.maxLatched), this.name,
-      this.parryPressTick, this.doomBy, this.doomTick, this.doomHow, b(this.doomExecute)
+      this.parryPressTick, this.doomBy, this.doomTick, this.doomHow, b(this.doomExecute),
+      this.carrying, this.dashT, this.dashCd, b(this.lungeFromShroud),
+      [this.parryAttempts, this.graceParries, this.executeParries, this.shroudKills, this.captures, this.zoneTime]
     ];
   }
 
@@ -263,6 +283,11 @@ export class Entity {
     this.doomTick = s[i++] as number;
     this.doomHow = s[i++] as string;
     this.doomExecute = s[i++] === 1;
+    this.carrying = s[i++] as number;
+    this.dashT = s[i++] as number;
+    this.dashCd = s[i++] as number;
+    this.lungeFromShroud = s[i++] === 1;
+    [this.parryAttempts, this.graceParries, this.executeParries, this.shroudKills, this.captures, this.zoneTime] = s[i++] as number[];
   }
 }
 

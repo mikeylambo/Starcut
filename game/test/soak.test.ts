@@ -27,7 +27,7 @@ test("Soak: 3-minute 8-bot match at the Rough preset — completes, replays exac
   const seconds = 180;
   const { room, clients, replay } = runSoak(rough, seconds, 4242);
 
-  assert.equal(room.state, "ended", "match ran to completion");
+  assert.equal(room.state, "results", "match ran to completion");
   assert.ok(replay, "replay saved");
   const player = new ReplayPlayer(JSON.parse(JSON.stringify(replay)));
   while (!player.done) player.advance();
