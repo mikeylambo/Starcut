@@ -308,6 +308,10 @@ test("Away: an idle (hidden-tab) player's seat goes to a bot after the idle limi
   const moving = { ...neutral, moveZ: 1 };
   rig.room.input(p, { q: ++q, d: packInput(moving) });
   assert.equal(rig.room.memberOf(p)!.away, false, "back");
+  rig.advance(0.2, () => rig.room.input(p, { q: ++q, d: packInput(moving) }));
+  const ent = rig.room.sim!.entities[seat];
+  assert.equal(ent.prevAttack, neutral.attack, "the seat continues from the player's own counters (no phantom press)");
+  assert.ok(!ent.lunge.isActive, "no phantom lunge on return");
   assert.equal(rig.room.seats[seat].brain, null);
 });
 

@@ -362,12 +362,12 @@ export class Room {
     this.broadcastLobby();
   }
 
-  private markBack(m: Member): void {
+  private markBack(m: Member, base?: SimInput): void {
     if (!m.away) return;
     m.away = false;
     console.log(`[room ${this.code}] ${m.name} is back in seat ${m.seat}`);
     m.lastInputAt = this.now();
-    if (this.state === "live" && m.seat >= 0) this.takeSeat(m, m.seat, false);
+    if (this.state === "live" && m.seat >= 0) this.takeSeat(m, m.seat, false, base);
     m.peer?.send("away", { away: false }, true);
     this.broadcastLobby();
   }
@@ -405,7 +405,7 @@ export class Room {
     return FACTIONS.factions.findIndex((f) => f.id === m.faction);
   }
 
-  private takeSeat(m: Member, seat: number, fresh: boolean): void {
+  private takeSeat(m: Member, seat: number, fresh: boolean, base?: SimInput): void {
     const s = this.seats[seat];
     s.member = m;
     s.brain = null;
@@ -420,8 +420,11 @@ export class Room {
       this.latest[seat] = emptyInput();
       this.command({ type: "seat", seat, archetype: m.archetype, name: m.name, fresh: true });
     } else {
-      // Back from away: the client's press counters kept counting; continue from them.
-      const l = this.latest[seat];
+      // Back from away: the client's press counters kept counting; continue from the
+      // player's OWN last input (the seat's latest input was the bot's), so the next
+      // packet isn't read as a phantom press.
+      const l = base ?? m.lastIn ?? emptyInput();
+      this.latest[seat] = { ...l, moveX: 0, moveZ: 0 };
       this.command({ type: "seat", seat, archetype: m.archetype, name: m.name });
       this.command({ type: "counters", seat, jump: l.jump, attack: l.attack, parry: l.parry, ability: l.ability });
     }
@@ -477,7 +480,7 @@ export class Room {
     m.lastIn = last;
     if (last.moveX !== 0 || last.moveZ !== 0 || (prev && (last.attack !== prev.attack || last.parry !== prev.parry || last.jump !== prev.jump || last.ability !== prev.ability))) {
       m.lastInputAt = this.now();
-      if (m.away) this.markBack(m);
+      if (m.away) this.markBack(m, prev);
     }
   }
 

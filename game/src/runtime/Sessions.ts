@@ -155,6 +155,8 @@ export class NetSession implements Session {
   specCam = new THREE.Vector3(0, 6, 0);
   private placeholder: Simulation | null = null;
   private lastCorrReport = 0;
+  /** A bot drove my seat until this moment (plus settle): corrections then are expected, not bugs. */
+  private quietUntil = 0;
 
   constructor(url: string, port: number, hello: Omit<HelloMsg, "v">) {
     this.net = new NetClient(url, port);
@@ -200,7 +202,8 @@ export class NetSession implements Session {
       const before = me.feet.clone();
       if (pc.reconcile()) {
         // Large corrections are logged server-side with an auto-saved clip.
-        if (pc.lastCorrection > BETA.correctionLogMeters && performance.now() - this.lastCorrReport > 5000) {
+        if (this.net.away || this.net.status === "reconnecting") this.quietUntil = performance.now() + 2000;
+        if (pc.lastCorrection > BETA.correctionLogMeters && performance.now() > this.quietUntil && performance.now() - this.lastCorrReport > 5000) {
           this.lastCorrReport = performance.now();
           this.net.reportCorrection(pc.sim.tick, pc.lastCorrection);
         }
