@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>STARCUT Admin</title>
+<style>
+  :root { --bg:#070a10; --panel:#0e141e; --line:#1f2c3c; --text:#e6eef8; --dim:#8797ab; --accent:#37d6ff; --bad:#ff6a5a; --good:#8affc1; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  header { display:flex; gap:12px; align-items:center; padding:14px 22px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2; }
+  header h1 { font-size:15px; letter-spacing:.3em; margin:0 18px 0 0; }
+  button, select, input { font:inherit; color:var(--text); background:#111a26; border:1px solid var(--line); border-radius:8px; padding:6px 11px; }
+  button { cursor:pointer; } button:hover { border-color:var(--accent); }
+  button.on { border-color:var(--accent); background:#12303d; }
+  main { padding:18px 22px; display:grid; gap:16px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td, th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:11px; letter-spacing:.1em; }
+  .tag { font-size:11px; padding:1px 6px; border:1px solid var(--line); border-radius:6px; margin-right:3px; }
+  .dim { color:var(--dim); } .bad { color:var(--bad); } .good { color:var(--good); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:16px; }
+  .bar { height:8px; background:#1a2432; border-radius:5px; overflow:hidden; } .bar i { display:block; height:100%; background:var(--accent); }
+  canvas { width:100%; background:#05070b; border-radius:8px; }
+  a { color:var(--accent); }
+  #login { max-width:380px; margin:12vh auto; display:grid; gap:10px; }
+</style>
+</head>
+<body>
+<div id="login" class="panel">
+  <b>STARCUT ADMIN</b>
+  <span class="dim">Enter the ADMIN_PASSWORD configured on this server.</span>
+  <input type="password" id="key" placeholder="Admin password" autofocus>
+  <button id="go">Sign in</button>
+  <span id="err" class="bad"></span>
+</div>
+<div id="app" hidden>
+  <header><h1>STARCUT ADMIN</h1>
+    <button data-tab="feedback" class="on">Feedback inbox</button><button data-tab="reports">Report queue</button><button data-tab="dash">Dashboards</button>
+    <span style="flex:1"></span><label class="dim">Client URL <input id="client" size="30"></label><button id="refresh">Refresh</button></header>
+  <main id="view"></main>
+</div>
+<script>
+(() => {
+  let key = sessionStorage.getItem("sc-admin") || "";
+  let tab = "feedback";
+  let clientUrl = localStorage.getItem("sc-admin-client") || "";
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" })[c]);
+  async function api(path, init = {}) {
+    const res = await fetch(path, { ...init, headers: { authorization: "Bearer " + key, "content-type": "application/json" } });
+    if (res.status === 401) throw new Error("unauthorized");
+    return res.json();
+  }
+  /** Replay deep link into the game client: plays the stored replay from `start`. */
+  function watch(id, start, seat) {
+    const base = (clientUrl || "").replace(/\/$/, "");
+    const server = location.host;
+    return `${base}/?replay=${encodeURIComponent(id)}&start=${start|0}&seat=${seat|0}&server=${encodeURIComponent(server)}`;
+  }
+  async function login() {
+    key = $("#key").value || key;
+    try {
+      const r = await api("/admin/api/feedback");
+      sessionStorage.setItem("sc-admin", key);
+      if (!clientUrl) clientUrl = r.clientUrl || "";
+      $("#client").value = clientUrl;
+      $("#login").hidden = true; $("#app").hidden = false;
+      render();
+    } catch (e) { $("#err").textContent = "Wrong password (or admin disabled)."; }
+  }
+  $("#go").onclick = login;
+  $("#key").onkeydown = (e) => { if (e.key === "Enter") login(); };
+  $("#client").onchange = (e) => { clientUrl = e.target.value; localStorage.setItem("sc-admin-client", clientUrl); render(); };
+  $("#refresh").onclick = () => render();
+  document.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => {
+    tab = b.dataset.tab; document.querySelectorAll("[data-tab]").forEach((x) => x.classList.toggle("on", x === b)); render();
+  });
+  if (key) login();
+
+  async function render() {
+    const v = $("#view");
+    v.innerHTML = '<div class="dim">Loading…</div>';
+    try {
+      if (tab === "feedback") v.innerHTML = await feedbackView();
+      else if (tab === "reports") v.innerHTML = await reportsView();
+      else { v.innerHTML = await dashView(); drawHeatmaps(); }
+    } catch (e) { v.innerHTML = `<div class="bad">${esc(e.message)}</div>`; }
+  }
+
+  async function feedbackView() {
+    const { items } = await api("/admin/api/feedback");
+    const counts = { new: 0, seen: 0, done: 0 };
+    items.forEach((f) => counts[f.status] = (counts[f.status] || 0) + 1);
+    const rows = items.map((f) => `<tr>
+      <td class="dim">${esc(new Date(f.at).toLocaleString())}</td>
+      <td>${f.kind === "correction" ? '<span class="tag bad">AUTO</span>' : f.kind === "offline" ? '<span class="tag">OFFLINE</span>' : ""}${(f.tags||[]).map((t) => `<span class="tag">${esc(t)}</span>`).join("")}<div>${esc(f.note)}</div></td>
+      <td>${esc(f.name)}<div class="dim">${esc(f.mode)} · ${esc(f.map)} · room ${esc(f.room)}</div></td>
+      <td class="dim">${esc(f.build)}</td>
+      <td>${f.replayId ? `<a href="${watch(f.replayId, f.startStep, 0)}" target="_blank">Watch clip</a><div class="dim">${esc(f.replayId)} @${f.startStep}</div>` : '<span class="dim">no replay</span>'}</td>
+      <td><select data-fb="${esc(f.id)}">${["new","seen","done"].map((s) => `<option${s === f.status ? " selected" : ""}>${s}</option>`).join("")}</select></td></tr>`).join("");
+    setTimeout(() => document.querySelectorAll("[data-fb]").forEach((s) => s.onchange = () => api("/admin/api/feedback/status", { method: "POST", body: JSON.stringify({ id: s.dataset.fb, status: s.value }) })), 0);
+    return `<div class="panel"><b>Feedback inbox</b> <span class="dim">${items.length} total · ${counts.new} new · ${counts.seen} seen · ${counts.done} done</span>
+      <table><tr><th>WHEN</th><th>NOTE</th><th>PLAYER</th><th>BUILD</th><th>REPLAY</th><th>STATUS</th></tr>${rows || '<tr><td colspan="6" class="dim">No feedback yet.</td></tr>'}</table></div>`;
+  }
+
+  async function reportsView() {
+    const { items } = await api("/admin/api/reports");
+    const rows = items.map((r) => `<tr><td class="dim">${esc(new Date(r.at).toLocaleString())}</td><td><b>${esc(r.suspect)}</b></td><td>${esc(r.reason)}</td><td>${esc(r.reporter)}</td><td class="dim">${esc(r.build)}</td>
+      <td><a href="${watch(r.replayId, 0, 0)}" target="_blank">Open replay</a> <span class="dim">(scrub with the bar or , .)</span><div class="dim">${esc(r.replayId)}</div></td></tr>`).join("");
+    return `<div class="panel"><b>Report queue</b> <span class="dim">${items.length} reports</span>
+      <table><tr><th>WHEN</th><th>SUSPECT</th><th>REASON</th><th>REPORTER</th><th>BUILD</th><th>REPLAY</th></tr>${rows || '<tr><td colspan="6" class="dim">No reports.</td></tr>'}</table></div>`;
+  }
+
+  let heat = { maps: [], kills: {} };
+  async function dashView() {
+    const [{ items }, { maps }, { standing }] = await Promise.all([api("/admin/api/telemetry?limit=2000"), api("/admin/api/maps"), api("/admin/api/war")]);
+    const kits = ["rusher", "ghost", "reflex"];
+    const picks = {}, wins = {}, matchups = {};
+    let att = 0, suc = 0, grace = 0, exe = 0, exeParry = 0, disc = 0, reco = 0, afk = 0;
+    const rtt = []; const kills = {}; const modes = {};
+    for (const t of items) {
+      for (const k in t.kitPicks) picks[k] = (picks[k] || 0) + t.kitPicks[k];
+      for (const k in t.kitWins) wins[k] = (wins[k] || 0) + t.kitWins[k];
+      for (const k in t.matchups) matchups[k] = (matchups[k] || 0) + t.matchups[k];
+      att += t.parries.attempts; suc += t.parries.successes; grace += t.parries.grace; exe += t.executes; exeParry += t.executeParries;
+      disc += t.disconnects; reco += t.reconnects; afk += t.afkTakeovers;
+      rtt.push(...(t.rtt || []));
+      (kills[t.map] = kills[t.map] || []).push(...t.kills);
+      modes[t.mode] = (modes[t.mode] || 0) + 1;
+    }
+    heat = { maps, kills };
+    const pct = (a, b) => b ? `${Math.round((a / b) * 100)}%` : "—";
+    const kitRows = kits.map((k) => `<tr><td>${k}</td><td>${picks[k] || 0}</td><td>${pct(wins[k] || 0, picks[k] || 0)}</td><td><div class="bar"><i style="width:${picks[k] ? ((wins[k] || 0) / picks[k]) * 100 : 0}%"></i></div></td></tr>`).join("");
+    const mu = `<table><tr><th>KILLER ↓ / VICTIM →</th>${kits.map((k) => `<th>${k}</th>`).join("")}</tr>${kits.map((a) => `<tr><td>${a}</td>${kits.map((b) => `<td>${matchups[a + ">" + b] || 0}</td>`).join("")}</tr>`).join("")}</table>`;
+    rtt.sort((a, b) => a - b);
+    const q = (p) => rtt.length ? Math.round(rtt[Math.min(rtt.length - 1, Math.floor(p * rtt.length))] * 2) : 0;
+    const buckets = [0, 25, 50, 75, 100, 150, 200, 300, 1e9];
+    const hist = buckets.slice(0, -1).map((b, i) => rtt.filter((x) => x * 2 >= b && x * 2 < buckets[i + 1]).length);
+    const hmax = Math.max(1, ...hist);
+    return `<div class="grid">
+      <div class="panel"><b>Matches</b><div class="dim">${items.length} matches · ${Object.entries(modes).map(([m, n]) => `${m} ${n}`).join(" · ")}</div></div>
+      <div class="panel"><b>Kit picks & win rates</b><table><tr><th>KIT</th><th>PICKS</th><th>WIN RATE</th><th></th></tr>${kitRows}</table></div>
+      <div class="panel"><b>Matchups (kills)</b>${mu}</div>
+      <div class="panel"><b>Parries</b><div>Attempts ${att} · successes ${suc} (${pct(suc, att)}) · via grace ${grace} (${pct(grace, suc)} of successes)</div>
+        <div>Executes ${exe} · execute-parries ${exeParry} (${pct(exeParry, exe + exeParry)} of execute attempts that met a parry-or-kill)</div></div>
+      <div class="panel"><b>RTT distribution</b><div class="dim">p50 ${q(.5)} ms · p90 ${q(.9)} ms · p99 ${q(.99)} ms · ${rtt.length} samples</div>
+        ${hist.map((n, i) => `<div style="display:grid;grid-template-columns:90px 1fr 50px;gap:8px;align-items:center"><span class="dim">${buckets[i]}–${buckets[i + 1] > 1e8 ? "∞" : buckets[i + 1]} ms</span><div class="bar"><i style="width:${(n / hmax) * 100}%"></i></div><span>${n}</span></div>`).join("")}</div>
+      <div class="panel"><b>Connections</b><div>Disconnects ${disc} · reconnects ${reco} · idle/away takeovers ${afk}</div></div>
+      <div class="panel"><b>Faction war</b>${(standing || []).map((f) => `<div><span style="color:${f.color}">${esc(f.name)}</span> ${Math.round(f.points)}</div>`).join("")}</div>
+      </div>
+      <div class="grid">${maps.map((m) => `<div class="panel"><b>Kill heatmap — ${esc(m.name)}</b> <span class="dim">${(kills[m.id] || []).length} kills</span><canvas data-map="${esc(m.id)}" width="520" height="520"></canvas></div>`).join("")}</div>`;
+  }
+
+  function drawHeatmaps() {
+    document.querySelectorAll("canvas[data-map]").forEach((c) => {
+      const m = heat.maps.find((x) => x.id === c.dataset.map);
+      if (!m) return;
+      const g = c.getContext("2d");
+      const [x0, z0] = m.bounds.min, [x1, z1] = m.bounds.max;
+      const pad = 2, w = x1 - x0 + pad * 2, h = z1 - z0 + pad * 2;
+      const s = Math.min(c.width / w, c.height / h);
+      const X = (x) => (x - x0 + pad) * s, Z = (z) => (z - z0 + pad) * s;
+      g.fillStyle = "#05070b"; g.fillRect(0, 0, c.width, c.height);
+      // Map solids, top-down (floors dim, walls bright).
+      for (const b of m.solids) {
+        const [cx, cy, cz, sx, sy, sz, tag] = b;
+        if (tag === "floor" || (sy < 1.2 && cy < 0.2)) { g.fillStyle = "#0f1622"; }
+        else if (tag === "ceiling" || cy - sy / 2 > 3) continue;
+        else g.fillStyle = tag === "window" ? "#1d4a66" : "#3a4658";
+        g.fillRect(X(cx - sx / 2), Z(cz - sz / 2), sx * s, sz * s);
+      }
+      // Kills: additive glow by killer kit.
+      const col = { rusher: "255,90,60", ghost: "185,140,255", reflex: "255,184,48" };
+      g.globalCompositeOperation = "lighter";
+      for (const k of heat.kills[m.id] || []) {
+        const gr = g.createRadialGradient(X(k.x), Z(k.z), 0, X(k.x), Z(k.z), 10);
+        gr.addColorStop(0, `rgba(${col[k.killerKit] || "255,255,255"},.35)`); gr.addColorStop(1, "rgba(0,0,0,0)");
+        g.fillStyle = gr; g.fillRect(X(k.x) - 10, Z(k.z) - 10, 20, 20);
+      }
+      g.globalCompositeOperation = "source-over";
+    });
+  }
+})();
+</script>
+</body>
+</html>

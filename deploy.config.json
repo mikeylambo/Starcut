@@ -1,0 +1,9 @@
+{
+  "host": "deploy@your-vps.example",
+  "dir": "/srv/starcut",
+  "repo": "https://github.com/mikeylambo/Starcut.git",
+  "environments": {
+    "production": { "app": "starcut-production", "branch": "main", "port": 9208 },
+    "staging": { "app": "starcut-staging", "branch": "@current", "port": 9308 }
+  }
+}

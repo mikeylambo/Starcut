@@ -3,5 +3,9 @@
   "installCommand": "npm ci",
   "buildCommand": "npm run build",
   "outputDirectory": "game/dist",
-  "framework": null
+  "framework": null,
+  "rewrites": [
+    { "source": "/join/assets/:path*", "destination": "/assets/:path*" },
+    { "source": "/join/:code", "destination": "/index.html" }
+  ]
 }

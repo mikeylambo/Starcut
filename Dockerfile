@@ -36,6 +36,7 @@ RUN GECKOS=$(node -p "require('./package.json').dependencies['@geckos.io/server'
  && npm install --omit=dev --no-audit --no-fund "@geckos.io/server@${GECKOS}" \
  && mkdir -p /data
 COPY --from=build /src/dist-server/index.mjs ./index.mjs
+COPY --from=build /src/dist-server/admin.html ./admin.html
 VOLUME ["/data"]
 EXPOSE 9208/tcp
 EXPOSE 20000-20010/udp
