@@ -2,7 +2,6 @@ import * as THREE from "three";
 import { PointerLook } from "@slu/web-shell";
 import { VoidglassRender } from "../render/VoidglassRender";
 import { voidglassData } from "../world/VoidglassData";
-import { segmentBlocked } from "../world/Physics";
 import { GameplayInput, type InputSnapshot } from "./GameplayInput";
 import { RenderPipeline } from "../render/RenderPipeline";
 import { createSpaceBackdrop } from "../render/SpaceBackdrop";
@@ -14,6 +13,7 @@ import { StarcutAudio } from "../audio/StarcutAudio";
 import { PLAYER, REFLEX, RUSHER } from "../config/tuning";
 import { archetypeHue } from "../render/EntityView";
 import { Presentation } from "./Presentation";
+import { ChaseCamera } from "./ChaseCamera";
 import { LocalSession, NetSession, ReplaySession, type Session } from "./Sessions";
 import { serverLocation } from "../net/NetClient";
 import { flowBand, SWING_ACTIVE } from "../sim/Simulation";
@@ -103,6 +103,7 @@ export class StarcutRuntime {
   // Spectator / replay camera
   private freeCam = false;
   private camPos = new THREE.Vector3(0, 6, 8);
+  private chase = new ChaseCamera();
   private replayClip: { recorder: MediaRecorder; chunks: Blob[] } | null = null;
 
   constructor(private readonly opts: StarcutRuntimeOptions) {
@@ -712,20 +713,23 @@ export class StarcutRuntime {
       const f = this.freeCam ? null : this.present.focus;
       const p = f ? s.pose(f.id) : null;
       if (f && p) {
-        // Chase cam behind the followed player, pulled in by walls.
+        // Chase cam behind the followed player, sphere-cast so it never clips walls.
         const head = new THREE.Vector3(p.x, p.y + 1.7, p.z);
-        const back = new THREE.Vector3(-Math.sin(p.yaw), 0, -Math.cos(p.yaw));
-        let want = head.clone().addScaledVector(back, 3.4).add(new THREE.Vector3(0, 0.9, 0));
-        if (segmentBlocked(head.x, head.y, head.z, want.x, want.y, want.z, s.sim.map.solids)) want = head.clone().addScaledVector(back, 0.8).add(new THREE.Vector3(0, 0.4, 0));
-        this.camPos.lerp(want, Math.min(1, dt * 10));
+        const look = this.chase.update(head, p.yaw, p.pitch, dt, s.sim.map.solids);
+        this.camPos.copy(this.chase.position);
         this.camera.position.copy(this.camPos);
-        this.camera.lookAt(head.x + Math.sin(p.yaw) * 4, head.y + Math.sin(p.pitch) * 4, head.z + Math.cos(p.yaw) * 4);
+        this.camera.lookAt(look);
         this.lookYaw = p.yaw;
       } else {
         this.camera.position.copy(this.camPos);
         this.lookAlong(this.lookYaw, this.lookPitch, 0);
       }
       this.visuals.update(fxDt, f?.archetype ?? "rusher", f?.resource ?? 0, { isActive: false }, { speed: 0, grounded: true, lookYaw: 0, lookPitch: 0, exposed: false, parryOpen: false });
+    }
+    const fov = s && me && !this.spectating ? this.visuals.fov : this.opts.fov;
+    if (Math.abs(this.camera.fov - fov) > 0.01) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
     }
     this.backdrop.position.copy(this.camera.position); // infinitely distant: no parallax
     this.pipeline.render(dt);

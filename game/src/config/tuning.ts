@@ -277,6 +277,40 @@ export const NET = {
   strikeSoundRadius: 22
 };
 
+/** First-person viewmodel + camera, per kit. Presentation only. */
+export const VIEWMODEL = {
+  rusherScale: 0.52,
+  rusherOffsetX: 0,
+  rusherOffsetY: 0,
+  rusherOffsetZ: 0,
+  rusherFov: 92,
+  ghostScale: 0.46,
+  ghostOffsetX: 0.01,
+  ghostOffsetY: -0.02,
+  ghostOffsetZ: 0.02,
+  ghostFov: 90,
+  /** Reflex twin blades: smaller, and spread symmetric either side of centre. */
+  reflexScale: 0.34,
+  reflexSpread: 0.27,
+  reflexOffsetY: -0.04,
+  reflexOffsetZ: 0.04,
+  reflexFov: 90,
+  /** Idle breathing sway (m) and rate (Hz). */
+  swayAmount: 0.006,
+  swayHz: 0.35,
+  /** Lunge kick: blade punches forward this far (m), springs back at this rate; FOV kick (deg). */
+  kickAmount: 0.12,
+  kickRecover: 9,
+  kickFov: 5,
+  /** Chase/replay camera: distance behind, height, collision sphere radius (m). */
+  chaseDistance: 3.4,
+  chaseHeight: 0.9,
+  chaseRadius: 0.3,
+  /** Pull-in is fast (never clips); release is slow (no popping). Per second. */
+  chasePullIn: 22,
+  chaseRelease: 3.5
+};
+
 export const FX = {
   /** Archetype identity hues. Brightness + pulse rate carry the resource level. */
   hueRusher: 0x2fb8ff,
@@ -297,12 +331,20 @@ export const FX = {
   /** Presentation-only hitstop on a kill (s): camera/FX time-dilate, victim frame held. */
   killHitStop: 0.11,
   /** Time scale applied to camera + FX during hitstop. */
-  hitStopScale: 0.12
+  hitStopScale: 0.12,
+  /** Parry inversion flash (s); an execute-parry gets the heavy one. */
+  parryFlash: 0.07,
+  heavyParryFlash: 0.16,
+  /** Victim dissolve after the held hitstop frame (s). */
+  dissolveTime: 0.38,
+  /** Third-person lunge afterimages: interval and life (s). */
+  ghostTrailInterval: 0.03,
+  ghostTrailLife: 0.22
 };
 
 /** Every tunable group, in panel/export order. */
 export const TUNING = {
-  PLAYER, LUNGE, PARRY, FLOW, RUSHER, GHOST, REFLEX, BOT, BOTAI, MATCH, NET, FX
+  PLAYER, LUNGE, PARRY, FLOW, RUSHER, GHOST, REFLEX, BOT, BOTAI, MATCH, NET, VIEWMODEL, FX
 } as const;
 
 export type TuningGroupName = keyof typeof TUNING;

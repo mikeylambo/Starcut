@@ -38,11 +38,13 @@ export type StarcutAudioEvent =
   | "respawn"
   | "trade"
   | "footstep"
-  | "ui.tick";
+  | "ui.tick"
+  | "parry.execute";
 
 interface Voice {
   bus: Exclude<AudioBusName, string> | AudioBusName;
-  build: (ctx: AudioContext, out: GainNode, now: number) => void;
+  /** intensity: 0..~1.5, e.g. lunge velocity — voices that care scale with it. */
+  build: (ctx: AudioContext, out: GainNode, now: number, intensity: number) => void;
 }
 
 export class StarcutAudio implements AudioSystem {
@@ -110,7 +112,7 @@ export class StarcutAudio implements AudioSystem {
   }
 
   /** Semantic entry point used across gameplay. */
-  emit(event: StarcutAudioEvent, volume = 1): void {
+  emit(event: StarcutAudioEvent, volume = 1, intensity = 1): void {
     if (volume <= 0.01) return;
     const voice = VOICES[event];
     if (!voice) return;
@@ -121,7 +123,7 @@ export class StarcutAudio implements AudioSystem {
     const out = ctx.createGain();
     out.gain.value = Math.min(1, volume);
     out.connect(bus);
-    voice.build(ctx, out, ctx.currentTime);
+    voice.build(ctx, out, ctx.currentTime, intensity);
   }
 }
 
@@ -194,11 +196,20 @@ function noise(
   src.stop(t0 + opts.dur + 0.02);
 }
 
+/** Parry clang: transient + metallic ring (inharmonic partials) + sub. */
+function clang(ctx: AudioContext, out: GainNode, now: number, weight: number): void {
+  noise(ctx, out, now, { dur: 0.03, gain: 0.35 * weight, hp: 3500 });
+  const base = 1180 / Math.sqrt(weight);
+  const partials: [number, number, number][] = [[1, 0.13, 0.7], [2.76, 0.08, 0.5], [5.4, 0.05, 0.35], [8.93, 0.03, 0.22]];
+  for (const [ratio, gain, dur] of partials) tone(ctx, out, now, { type: "sine", from: base * ratio, dur: dur * weight, gain: gain * weight, attack: 0.002 });
+  tone(ctx, out, now, { type: "sine", from: 58, to: 44, dur: 0.22 * weight, gain: 0.3 * weight });
+}
+
 const VOICES: Record<StarcutAudioEvent, Voice> = {
   "enemy.lunge": {
     bus: "sfx",
-    build: (ctx, out, now) => {
-      noise(ctx, out, now, { dur: 0.2, gain: 0.26, hp: 700, lp: 3600 });
+    build: (ctx, out, now, k) => {
+      noise(ctx, out, now, { dur: 0.12 + 0.1 * k, gain: 0.18 + 0.1 * k, hp: 500 + 400 * k, lp: 2400 + 2000 * k });
       tone(ctx, out, now, { type: "sawtooth", from: 160, to: 70, dur: 0.18, gain: 0.12 });
     }
   },
@@ -291,9 +302,10 @@ const VOICES: Record<StarcutAudioEvent, Voice> = {
   },
   "lunge.commit": {
     bus: "sfx",
-    build: (ctx, out, now) => {
-      noise(ctx, out, now, { dur: 0.22, gain: 0.32, hp: 900, lp: 5200 });
-      tone(ctx, out, now, { type: "sawtooth", from: 220, to: 90, dur: 0.2, gain: 0.14 });
+    // Whoosh scaled by launch velocity: faster = brighter, longer, louder.
+    build: (ctx, out, now, k) => {
+      noise(ctx, out, now, { dur: 0.14 + 0.1 * k, gain: 0.2 + 0.14 * k, hp: 500 + 500 * k, lp: 2800 + 3200 * k });
+      tone(ctx, out, now, { type: "sawtooth", from: 160 + 90 * k, to: 70, dur: 0.16 + 0.06 * k, gain: 0.1 + 0.05 * k });
     }
   },
   "lunge.kill": {
@@ -318,10 +330,16 @@ const VOICES: Record<StarcutAudioEvent, Voice> = {
   },
   "parry.success": {
     bus: "sfx",
+    // Layered clang: transient click + inharmonic metallic ring + sub thump.
+    build: (ctx, out, now) => clang(ctx, out, now, 1)
+  },
+  "parry.execute": {
+    bus: "sfx",
+    // Execute-parry stinger: a heavier clang, a rising shimmer and a sub drop.
     build: (ctx, out, now) => {
-      tone(ctx, out, now, { type: "square", from: 1760, to: 2640, dur: 0.09, gain: 0.16 });
-      tone(ctx, out, now, { type: "sine", from: 2640, to: 3520, dur: 0.18, gain: 0.12, delay: 0.02 });
-      noise(ctx, out, now, { dur: 0.08, gain: 0.24, hp: 3000 });
+      clang(ctx, out, now, 1.6);
+      tone(ctx, out, now, { type: "sine", from: 70, to: 32, dur: 0.7, gain: 0.34 });
+      for (let i = 0; i < 4; i++) tone(ctx, out, now, { type: "triangle", from: 660 * (1 + i * 0.5), dur: 0.35, gain: 0.05, delay: 0.06 + i * 0.05 });
     }
   },
   "hit.taken": {

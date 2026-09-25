@@ -20,6 +20,8 @@ export function glowIntensity(resource: number, t: number): number {
 export interface EntityVisualState {
   x: number; y: number; z: number;
   yaw: number;
+  /** Should this entity be drawn at all (known to this client, not my own body)? */
+  present: boolean;
   alive: boolean;
   resource: number;
   telegraph: number; // practice attacker windup 0..1
@@ -55,13 +57,16 @@ export class EntityView {
   private hue = new THREE.Color();
   /** Presentation hitstop: hold this frame (victim) for a moment. */
   frozenFor = 0;
+  private pendingDissolve = false;
+  private dissolveT = 0;
+  private shimmerT = 0;
 
   constructor(readonly kind: EntityKind, public archetype: Archetype, private readonly castShadow: boolean) {
     const practiceHue = kind === "dummy" ? 0x37d6ff : 0xff5a3c;
     const hue = kind === "player" ? archetypeHue(archetype) : practiceHue;
     this.hue.set(hue);
-    this.bodyMat = new THREE.MeshStandardMaterial({ color: 0x3a4352, emissive: new THREE.Color(hue), emissiveIntensity: 0.03, roughness: 0.32, metalness: 0.8, transparent: kind === "player" });
-    this.coreMat = new THREE.MeshStandardMaterial({ color: 0x05070b, emissive: new THREE.Color(hue), emissiveIntensity: 1.1, roughness: 0.4, transparent: kind === "player" });
+    this.bodyMat = new THREE.MeshStandardMaterial({ color: 0x3a4352, emissive: new THREE.Color(hue), emissiveIntensity: 0.03, roughness: 0.32, metalness: 0.8, transparent: true });
+    this.coreMat = new THREE.MeshStandardMaterial({ color: 0x05070b, emissive: new THREE.Color(hue), emissiveIntensity: 1.1, roughness: 0.4, transparent: true });
     this.build();
   }
 
@@ -137,6 +142,12 @@ export class EntityView {
     g.traverse((o) => { if (o instanceof THREE.Mesh) o.castShadow = this.castShadow && o !== this.revealRing; });
   }
 
+  /** Killed: hold the frame (hitstop), then dissolve. */
+  killed(holdFor: number): void {
+    this.frozenFor = holdFor;
+    this.pendingDissolve = true;
+  }
+
   setArchetype(a: Archetype): void {
     if (a === this.archetype || this.kind !== "player") return;
     this.archetype = a;
@@ -151,15 +162,40 @@ export class EntityView {
       this.frozenFor = Math.max(0, this.frozenFor - dt);
       return; // held frame
     }
-    this.group.visible = s.alive;
-    if (!s.alive) return;
+    // Kill dissolve: after the held frame, the victim burns out instead of vanishing
+    // (works even if the victim just dropped out of this client's snapshot).
+    if (this.pendingDissolve) {
+      this.pendingDissolve = false;
+      this.dissolveT = FX.dissolveTime;
+    }
+    if (this.dissolveT > 0) {
+      this.dissolveT = Math.max(0, this.dissolveT - dt);
+      const k = this.dissolveT / FX.dissolveTime;
+      this.group.visible = k > 0;
+      this.group.scale.set(1 + (1 - k) * 0.25, k, 1 + (1 - k) * 0.25);
+      this.bodyMat.opacity = k * k;
+      this.coreMat.opacity = k;
+      this.coreMat.emissiveIntensity = 3 + (1 - k) * 6;
+      return;
+    }
+    this.group.scale.set(1, 1, 1);
+    this.group.visible = s.present && s.alive;
+    if (!this.group.visible) return;
     this.group.position.set(s.x, s.y, s.z);
     this.group.rotation.y = s.yaw;
     this.bob += dt * 3;
 
     if (this.kind === "player") {
       this.coreMat.emissiveIntensity = s.staggered ? 0.35 + Math.sin(this.bob * 9) * 0.2 : glowIntensity(s.resource, time) * 0.7;
-      const op = s.opacity;
+      let op = s.opacity;
+      if (s.shrouded && s.enemy) {
+        // Shroud shimmer: a faint heat-haze flicker (only ever drawn within shroud range —
+        // the server withholds the Ghost entirely beyond it).
+        this.shimmerT += dt;
+        const n = Math.sin(this.shimmerT * 23) * Math.sin(this.shimmerT * 7.1 + 1.3);
+        op = 0.06 + 0.1 * (0.5 + 0.5 * n);
+        this.group.scale.set(1 + n * 0.015, 1 - n * 0.01, 1 + n * 0.015);
+      }
       this.bodyMat.opacity = op;
       this.coreMat.opacity = Math.min(1, op * 1.3);
       if (this.tagMat) {
@@ -182,6 +218,8 @@ export class EntityView {
     }
 
     // Phase 0 practice target visuals.
+    this.bodyMat.opacity = 1;
+    this.coreMat.opacity = 1;
     this.coreMat.emissiveIntensity = 1.0 + s.telegraph * 2.2 + Math.sin(this.bob) * 0.08;
     if (s.staggered) this.coreMat.emissiveIntensity = 0.35 + Math.sin(this.bob * 3) * 0.2;
     const blade = this.blades[0];

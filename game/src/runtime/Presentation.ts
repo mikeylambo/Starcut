@@ -97,8 +97,36 @@ export class Presentation {
     return Math.max(0, 1 - d / 40);
   }
 
-  private sound(ev: StarcutAudioEvent, at?: Entity): void {
-    this.audio.emit(ev, at && !this.isFocus(at) ? this.volumeAt(at) : 1);
+  private sound(ev: StarcutAudioEvent, at?: Entity, intensity = 1): void {
+    this.audio.emit(ev, at && !this.isFocus(at) ? this.volumeAt(at) : 1, intensity);
+  }
+
+  // ---- third-person lunge afterimages + footsteps --------------------------------
+  private trails: { mesh: THREE.Mesh; life: number }[] = [];
+  private trailGeo = new THREE.CapsuleGeometry(0.42, 1.0, 4, 8);
+  private trailAccum = new Map<number, number>();
+  private stepPhase = new Map<number, number>();
+
+  private spawnTrail(pos: THREE.Vector3, yaw: number, color: THREE.Color): void {
+    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false });
+    const mesh = new THREE.Mesh(this.trailGeo, mat);
+    mesh.position.set(pos.x, pos.y + 0.9, pos.z);
+    mesh.rotation.y = yaw;
+    this.scene.add(mesh);
+    this.trails.push({ mesh, life: FX.ghostTrailLife });
+  }
+
+  private updateTrails(dt: number): void {
+    for (let i = this.trails.length - 1; i >= 0; i--) {
+      const t = this.trails[i];
+      t.life -= dt;
+      const mat = t.mesh.material as THREE.MeshBasicMaterial;
+      if (t.life <= 0) {
+        this.scene.remove(t.mesh);
+        mat.dispose();
+        this.trails.splice(i, 1);
+      } else mat.opacity = (t.life / FX.ghostTrailLife) * 0.35;
+    }
   }
 
   private startHitStop(t: number): void {
@@ -118,6 +146,7 @@ export class Presentation {
     const me = this.me;
     const myTeam = me ? me.team : this.focus ? this.focus.team : -1;
 
+    this.updateTrails(dt);
     for (const e of sim.entities) {
       let view = this.views.get(e.id);
       if (!view) {
@@ -134,7 +163,8 @@ export class Presentation {
       const shroudFade = e.shrouded ? (enemy ? 0.18 : 0.45) : 1;
       const st: EntityVisualState = {
         x: pose?.x ?? e.feet.x, y: pose?.y ?? e.feet.y, z: pose?.z ?? e.feet.z, yaw: pose?.yaw ?? e.yaw,
-        alive: !hidden && e.alive,
+        present: !hidden,
+        alive: e.alive,
         resource: e.resource,
         telegraph: e.isPlayer ? 0 : telegraphAmount(e),
         staggered: e.openToKill,
@@ -147,6 +177,25 @@ export class Presentation {
         opacity: shroudFade
       };
       view.update(realDt, st, this.time);
+
+      if (!hidden && e.alive && e.isPlayer) {
+        // Lunge afterimage trail (third person).
+        if (st.lunging) {
+          let acc = (this.trailAccum.get(e.id) ?? 0) + dt;
+          while (acc >= FX.ghostTrailInterval) {
+            acc -= FX.ghostTrailInterval;
+            this.spawnTrail(view.group.position, st.yaw, view.color);
+          }
+          this.trailAccum.set(e.id, acc);
+        } else this.trailAccum.set(e.id, 0);
+        // Footsteps, by speed; a Ghost is near-silent.
+        const speed = e.horizontalSpeed;
+        if (e.grounded && speed > 3) {
+          const ph = (this.stepPhase.get(e.id) ?? 0) + dt * (1.2 + speed * 0.2);
+          if (ph >= 1) this.audio.emit("footstep", this.volumeAt(e) * (e.archetype === "ghost" ? 0.06 : 0.8));
+          this.stepPhase.set(e.id, ph % 1);
+        }
+      }
     }
   }
 
@@ -174,8 +223,11 @@ export class Presentation {
   events(): SimEvents {
     return {
       lungeStart: (e) => {
-        if (this.isFocus(e)) this.sound(e.lunge.execute ? "execute" : "lunge.commit");
-        else this.sound("enemy.lunge", e);
+        const k = Math.min(1.5, e.lunge.speed / 30); // whoosh + kick scale with launch velocity
+        if (this.isFocus(e)) {
+          this.sound(e.lunge.execute ? "execute" : "lunge.commit", undefined, k);
+          this.visuals.onLungeKick(k);
+        } else this.sound("enemy.lunge", e, k);
       },
       lungeWhiff: (e) => { if (this.isFocus(e)) this.sound("lunge.whiff"); },
       swingStart: (e) => this.sound("swing", e),
@@ -197,18 +249,19 @@ export class Presentation {
         const at = this.posOf(d).lerp(this.posOf(a), 0.5);
         if (info.grace && (this.isFocus(d) || this.isFocus(a))) this.onGraceParry?.();
         if (this.isFocus(d)) {
-          this.sound("parry.success");
-          this.visuals.onParry(at);
+          this.sound(info.heavy ? "parry.execute" : "parry.success");
+          this.visuals.onParry(at, true, info.heavy);
           this.hud.showBanner(info.heavy ? "EXECUTE PARRIED" : info.stance ? "COUNTER" : "PARRY", info.heavy ? "#ffffff" : info.stance ? "#ffb830" : "#37d6ff");
           this.startHitStop(PARRY.successHitStop * (info.heavy ? 2 : 1));
         } else if (this.isFocus(a)) {
-          this.sound("parry.success");
+          this.sound(info.heavy ? "parry.execute" : "parry.success");
+          this.visuals.onParry(at, false, info.heavy);
           this.visuals.onHit();
           this.hud.showBanner(info.heavy ? "EXECUTE PARRIED" : "PARRIED", "#ff5a3c");
           this.shake = 0.5;
         } else {
-          this.visuals.onParry(at, false);
-          this.sound("parry.success", d);
+          this.visuals.onParry(at, false, info.heavy);
+          this.sound(info.heavy ? "parry.execute" : "parry.success", d);
         }
       },
       hitTaken: (v) => {
@@ -261,7 +314,7 @@ export class Presentation {
     const killerColor = new THREE.Color(k.isPlayer ? archetypeHue(k.archetype) : 0xff5a3c);
     const mine = this.isFocus(k);
     const dead = this.isFocus(v);
-    if (view) view.frozenFor = mine || dead ? FX.killHitStop : 0.05; // held frame on the victim
+    if (view) view.killed(mine || dead ? FX.killHitStop : 0.05); // held frame, then dissolve
     this.visuals.onKill(at, victimColor, mine, killerColor);
     if (mine) {
       this.sound(how === "execute" ? "execute" : how === "riposte" ? "riposte" : "lunge.kill");
@@ -296,5 +349,11 @@ export class Presentation {
 
   dispose(): void {
     this.attach(null);
+    for (const t of this.trails) {
+      this.scene.remove(t.mesh);
+      (t.mesh.material as THREE.Material).dispose();
+    }
+    this.trails = [];
+    this.trailGeo.dispose();
   }
 }

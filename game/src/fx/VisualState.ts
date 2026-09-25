@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { FX } from "../config/tuning";
+import { FX, VIEWMODEL } from "../config/tuning";
 import type { Archetype } from "../sim/types";
 import { archetypeHue, glowIntensity } from "../render/EntityView";
 import type { RenderPipeline } from "../render/RenderPipeline";
@@ -23,6 +23,13 @@ interface Afterimage {
   mesh: THREE.Mesh;
   life: number;
   maxLife: number;
+}
+
+function kitLayout(kit: Archetype): { scale: number; x: number; y: number; z: number; spread: number; fov: number } {
+  const V = VIEWMODEL;
+  if (kit === "reflex") return { scale: V.reflexScale, x: 0, y: V.reflexOffsetY, z: V.reflexOffsetZ, spread: V.reflexSpread, fov: V.reflexFov };
+  if (kit === "ghost") return { scale: V.ghostScale, x: V.ghostOffsetX, y: V.ghostOffsetY, z: V.ghostOffsetZ, spread: 0, fov: V.ghostFov };
+  return { scale: V.rusherScale, x: V.rusherOffsetX, y: V.rusherOffsetY, z: V.rusherOffsetZ, spread: 0, fov: V.rusherFov };
 }
 
 /** What the viewmodel reads from the lunge (or a Reflex swing). */
@@ -59,6 +66,10 @@ export class VisualState {
   private edgeMat: THREE.MeshStandardMaterial;
   private bodyMat: THREE.MeshStandardMaterial;
   private glow = new THREE.Color(FX.hueRusher);
+  private kit: Archetype = "rusher";
+  /** Lunge kick spring (1 = just kicked). */
+  private kick = 0;
+  private flashMax: number = FX.invertFlash;
   private readonly offRig = new THREE.Group();
   private time = 0;
 
@@ -157,6 +168,7 @@ export class VisualState {
   update(dt: number, archetype: Archetype, flow: number, lunge: LungeView, motion: MotionSample): void {
     // --- Archetype glow: hue = identity, brightness + pulse = resource ------
     this.time += dt;
+    this.kit = archetype;
     this.glow.set(archetypeHue(archetype));
     this.edgeMat.emissive.copy(this.glow);
     this.edgeMat.emissiveIntensity = glowIntensity(flow, this.time);
@@ -183,7 +195,7 @@ export class VisualState {
     // --- Invert flash decay ----------------------------------------------
     if (this.flashTimer > 0) {
       this.flashTimer = Math.max(0, this.flashTimer - dt);
-      this.invertEl.style.opacity = String((this.flashTimer / FX.invertFlash) * 0.9);
+      this.invertEl.style.opacity = String((this.flashTimer / this.flashMax) * 0.9);
     }
 
     // --- Grade pulse (hit / parry) + Flow fringe --------------------------
@@ -226,10 +238,22 @@ export class VisualState {
     pos.lerp(POSE_GUARD.pos, this.pose.z);
     rot.lerp(POSE_GUARD.rotV, this.pose.z);
 
-    this.viewmodel.position.set(pos.x + this.sway.x + bobX, pos.y + this.sway.y - bobY, pos.z);
-    this.bladeRig.rotation.set(rot.x, rot.y, rot.z);
+    // Per-kit layout (tuning.ts VIEWMODEL): scale, offset, Reflex twin-blade spread.
+    const L = kitLayout(this.kit);
+    const breathe = Math.PI * 2 * VIEWMODEL.swayHz * this.time;
+    const idleX = Math.cos(breathe * 0.5) * VIEWMODEL.swayAmount * 0.6;
+    const idleY = Math.sin(breathe) * VIEWMODEL.swayAmount;
+    this.kick = Math.max(0, this.kick - this.kick * Math.min(1, VIEWMODEL.kickRecover * dt));
+    const x = (this.kit === "reflex" ? pos.x - POSE_IDLE.pos.x + L.spread : pos.x) + L.x;
+    this.viewmodel.position.set(x + this.sway.x + bobX + idleX, pos.y + L.y + this.sway.y - bobY + idleY, pos.z + L.z - this.kick * VIEWMODEL.kickAmount);
+    this.bladeRig.scale.setScalar(L.scale);
+    this.bladeRig.rotation.set(rot.x - this.kick * 0.25, rot.y, rot.z);
     const off = this.offRig.children[0];
-    if (off) off.rotation.set(rot.x, rot.y, rot.z);
+    if (off) {
+      off.scale.setScalar(L.scale);
+      off.rotation.set(rot.x - this.kick * 0.25, rot.y, rot.z);
+    }
+    this.offRig.position.x = -2 * L.spread;
   }
 
   private readonly tmpPos = new THREE.Vector3();
@@ -268,6 +292,7 @@ export class VisualState {
   /** Clean kill: invert flash (your kills) + shard burst in the killer's glow. */
   onKill(at: THREE.Vector3, targetColor: THREE.Color, mine = true, killerColor: THREE.Color = this.glow): void {
     if (mine) {
+      this.flashMax = FX.invertFlash;
       this.flashTimer = FX.invertFlash;
       this.invertEl.style.opacity = "0.9";
     }
@@ -281,12 +306,28 @@ export class VisualState {
     this.pulse = 1.4;
   }
 
-  onParry(at: THREE.Vector3, pulse = true): void {
-    if (pulse) {
-      this.pulseColor.set(0x7fe8ff);
-      this.pulse = 1;
+  /** Parry: inversion flash + spark burst (yours); an execute-parry gets the heavy version. */
+  onParry(at: THREE.Vector3, mine = true, heavy = false): void {
+    if (mine) {
+      this.pulseColor.set(heavy ? 0xffffff : 0x7fe8ff);
+      this.pulse = heavy ? 1.5 : 1;
+      this.flashMax = heavy ? FX.heavyParryFlash : FX.parryFlash;
+      this.flashTimer = this.flashMax;
+      this.invertEl.style.opacity = "0.9";
     }
-    this.bursts.burst(at, new THREE.Color(0x9ff0ff), 18, 7, false, this.camera);
+    const sparks = new THREE.Color(heavy ? 0xffffff : 0x9ff0ff);
+    this.bursts.burst(at, sparks, heavy ? 42 : 18, heavy ? 11 : 7, false, this.camera);
+    if (heavy) this.bursts.burst(at, new THREE.Color(FX.hueRusher), 20, 5, true, this.camera);
+  }
+
+  /** Lunge started: the blade punches forward (and the runtime kicks FOV). */
+  onLungeKick(intensity = 1): void {
+    this.kick = Math.min(1.4, intensity);
+  }
+
+  /** FOV for the current kit, including the lunge kick. */
+  get fov(): number {
+    return kitLayout(this.kit).fov + this.kick * VIEWMODEL.kickFov;
   }
 
   onHit(): void {

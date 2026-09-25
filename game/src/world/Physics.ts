@@ -153,3 +153,39 @@ export function pointInAnySolid(p: THREE.Vector3, solids: readonly Solid[]): boo
   for (const s of solids) if (pointInside(p, s)) return true;
   return false;
 }
+
+/**
+ * Sphere-cast: how far along a->b (0..1) a sphere of `radius` travels before it
+ * touches a solid (solids inflated by the radius; slab test). 1 = clear. Used by
+ * the chase/replay camera so it never clips into or hugs walls. If `a` already
+ * starts inside an inflated solid, that solid is ignored (the camera's pivot
+ * sits in the player's head, next to walls).
+ */
+export function sphereCast(
+  ax: number, ay: number, az: number,
+  bx: number, by: number, bz: number,
+  radius: number,
+  solids: readonly Solid[]
+): number {
+  const dx = bx - ax, dy = by - ay, dz = bz - az;
+  let best = 1;
+  for (const s of solids) {
+    const minX = s.min.x - radius, minY = s.min.y - radius, minZ = s.min.z - radius;
+    const maxX = s.max.x + radius, maxY = s.max.y + radius, maxZ = s.max.z + radius;
+    if (ax > minX && ax < maxX && ay > minY && ay < maxY && az > minZ && az < maxZ) continue;
+    let tmin = 0, tmax = 1, ok = true;
+    const slab = (o: number, d: number, lo: number, hi: number) => {
+      if (d === 0) { if (o < lo || o > hi) ok = false; return; }
+      let t1 = (lo - o) / d, t2 = (hi - o) / d;
+      if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+      if (t1 > tmin) tmin = t1;
+      if (t2 < tmax) tmax = t2;
+      if (tmin > tmax) ok = false;
+    };
+    slab(ax, dx, minX, maxX);
+    if (ok) slab(ay, dy, minY, maxY);
+    if (ok) slab(az, dz, minZ, maxZ);
+    if (ok && tmin < best) best = tmin;
+  }
+  return best;
+}
