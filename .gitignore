@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.testbuild/
+*.log
+.DS_Store
+vendor/web-shell/node_modules/

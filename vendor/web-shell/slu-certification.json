@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "requiredFiles": [
+    "src/Shell.ts",
+    "src/studio/StudioServices.ts",
+    "src/telemetry/Telemetry.ts",
+    "src/replay/InputReplay.ts",
+    "src/diagnostics/RuntimeDiagnostics.ts",
+    "src/localization/Localization.ts",
+    "src/validation/ContentValidator.ts",
+    "src/performance/PerformanceBudget.ts",
+    "src/platform/PlatformServices.ts",
+    "src/sequencing/Timeline.ts",
+    "src/debug/DevConsole.ts",
+    "src/assets/AssetManifest.ts",
+    "src/certification/Certification.ts",
+    "src/testing/FlowSmoke.ts"
+  ],
+  "requiredScripts": ["build", "check", "test", "verify"],
+  "declarations": [
+    "web-runtime",
+    "controller-ui",
+    "touch-primitives",
+    "save-migrations",
+    "telemetry",
+    "replay",
+    "diagnostics",
+    "localization",
+    "content-validation",
+    "performance-budgets",
+    "platform-services",
+    "sequencing",
+    "dev-console"
+  ],
+  "forbiddenSourceTokens": ["TODO_PLAYER", "PLACEHOLDER_PLAYER", "LOREM_IPSUM"],
+  "profiles": {
+    "web": {
+      "requiredFiles": ["src/platform/browser/BrowserPlatform.ts", "src/platform/browser/BrowserLifecycle.ts"],
+      "requiredDeclarations": ["web-runtime"]
+    },
+    "mobile": {
+      "requiredFiles": ["src/input/InputAssist.ts", "src/platform/browser/BrowserLifecycle.ts"],
+      "requiredDeclarations": ["touch-primitives"]
+    },
+    "controller": {
+      "requiredFiles": ["src/input/InputManager.ts", "src/platform/browser/BrowserLifecycle.ts"],
+      "requiredDeclarations": ["controller-ui"]
+    },
+    "release": {
+      "requiredFiles": ["AGENTS.md", "docs/STUDIO-INFRASTRUCTURE.md"],
+      "requiredDeclarations": ["save-migrations", "telemetry", "replay", "diagnostics", "localization", "content-validation", "performance-budgets", "platform-services", "sequencing", "dev-console"]
+    }
+  }
+}

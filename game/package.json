@@ -1,0 +1,24 @@
+{
+  "name": "starcut",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "check": "tsc --noEmit",
+    "test": "node tools/run-tests.mjs"
+  },
+  "dependencies": {
+    "@geckos.io/client": "^3.1.0",
+    "@slu/web-shell": "^1.1.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "@types/three": "^0.180.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0"
+  }
+}

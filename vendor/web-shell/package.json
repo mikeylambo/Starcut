@@ -1,0 +1,54 @@
+{
+  "name": "@slu/web-shell",
+  "version": "1.1.0",
+  "description": "Renderer-neutral web game shell with composable genre frames and reusable production systems.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./frames": "./dist/frames/index.js",
+    "./adapters": "./dist/adapters/index.js",
+    "./modules": "./dist/modules/index.js",
+    "./assemblies": "./dist/assemblies/index.js",
+    "./ui-shell": "./dist/ui-shell/index.js",
+    "./bootstrap": "./dist/bootstrap/index.js"
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "budget": "node tools/slu-budget.mjs",
+    "verify": "npm run verify:base && npm run verify:consumers && npm run verify:e2e && npm run budget",
+    "create-game": "node tools/create-slu-game.mjs",
+    "verify:base": "npm run check && npm test",
+    "verify:consumers": "node tools/verify-consumers.mjs",
+    "verify:e2e": "node tools/verify-browser-e2e.mjs",
+    "certify:web": "npm run verify && node tools/slu-certify.mjs web",
+    "certify:mobile": "npm run verify && node tools/slu-certify.mjs mobile",
+    "certify:controller": "npm run verify && node tools/slu-certify.mjs controller",
+    "certify:release": "npm run verify && node tools/slu-certify.mjs release",
+    "setup:img2threejs": "powershell -ExecutionPolicy Bypass -File tools/setup-img2threejs.ps1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.180.0",
+    "three": "^0.180.0",
+    "typescript": "^5.8.3"
+  },
+  "keywords": [
+    "game",
+    "webgame",
+    "threejs",
+    "babylonjs",
+    "canvas2d",
+    "slu"
+  ],
+  "license": "UNLICENSED",
+  "bin": {
+    "create-slu-game": "./tools/create-slu-game.mjs",
+    "slu-certify": "./tools/slu-certify.mjs",
+    "slu-budget": "./tools/slu-budget.mjs"
+  }
+}

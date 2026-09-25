@@ -1,0 +1,25 @@
+{
+  "name": "starcut-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "vendor/web-shell",
+    "game"
+  ],
+  "scripts": {
+    "build:shell": "npm --workspace @slu/web-shell run build",
+    "dev": "npm --workspace starcut run dev",
+    "build": "npm run build:shell && npm --workspace starcut run build",
+    "check": "npm run build:shell && npm --workspace starcut run check",
+    "test": "npm --workspace starcut run test",
+    "verify": "npm run check && npm run test && npm --workspace starcut run build",
+    "preview": "npm --workspace starcut run preview"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
+  },
+  "dependencies": {
+    "@geckos.io/server": "^3.1.0"
+  }
+}
