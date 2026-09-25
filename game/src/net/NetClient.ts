@@ -166,22 +166,39 @@ export class NetClient {
 }
 
 /**
- * Server location: `?server=host[:port]` overrides; otherwise the page's own
- * host on the default port (dev: `npm run dev` + `npm run server` on one box;
- * LAN: open http://<your-ip>:5173 on the other machine).
+ * Where the authority lives, in priority order:
+ *   1. `?server=host[:port]` (testing),
+ *   2. `VITE_AUTHORITY_URL` at build time, e.g. `https://authority.example.com`
+ *      (port defaults to 443 for https) or `http://1.2.3.4:9208`,
+ *   3. the page's own host on :9208 — i.e. localhost in dev, and the host
+ *      machine's IP when a LAN friend opens http://<ip>:5173.
  */
 export function serverLocation(): { url: string; port: number; http: string } {
   const loc = window.location;
   const override = new URLSearchParams(loc.search).get("server");
-  let host = loc.hostname || "localhost";
-  let port = DEFAULT_PORT;
   if (override) {
     const [h, p] = override.split(":");
-    host = h;
-    if (p) port = Number(p);
+    const proto = loc.protocol === "https:" ? "https:" : "http:";
+    const port = p ? Number(p) : DEFAULT_PORT;
+    return { url: `${proto}//${h}`, port, http: `${proto}//${h}:${port}` };
   }
+  const fromEnv = parseAuthority(String(import.meta.env.VITE_AUTHORITY_URL ?? ""));
+  if (fromEnv) return fromEnv;
   const proto = loc.protocol === "https:" ? "https:" : "http:";
-  return { url: `${proto}//${host}`, port, http: `${proto}//${host}:${port}` };
+  const host = loc.hostname || "localhost";
+  return { url: `${proto}//${host}`, port: DEFAULT_PORT, http: `${proto}//${host}:${DEFAULT_PORT}` };
+}
+
+export function parseAuthority(raw: string): { url: string; port: number; http: string } | null {
+  const v = raw.trim();
+  if (!v) return null;
+  try {
+    const u = new URL(/^[a-z]+:\/\//i.test(v) ? v : `https://${v}`);
+    const port = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
+    return { url: `${u.protocol}//${u.hostname}`, port, http: `${u.protocol}//${u.hostname}:${port}` };
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -15,9 +15,12 @@
     "check": "npm run build:shell && npm --workspace starcut run check && tsc -p server/tsconfig.json",
     "test": "npm --workspace starcut run test",
     "verify": "npm run check && npm run test && npm --workspace starcut run build",
-    "preview": "npm --workspace starcut run preview"
+    "preview": "npm --workspace starcut run preview",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist-server/index.mjs --external:@geckos.io/server --banner:js=\"import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);\"",
+    "start:server": "node dist-server/index.mjs"
   },
   "devDependencies": {
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.15"
   },
   "dependencies": {

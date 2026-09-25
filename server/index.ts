@@ -18,7 +18,7 @@ import { LinkConditioner, profileFromEnv } from "../game/src/net/LinkConditioner
  *   npm run server          (signalling + HTTP on :9208, WebRTC UDP 20000-20010)
  *
  * HTTP (same port):
- *   GET  /health            liveness + room/player counts
+ *   GET  /healthz           liveness + room/player counts (alias: /health)
  *   GET  /replay/<id>       a finished match's replay (JSON)
  *   POST /report            { replayId, reason, reporter } — the anti-cheat review path
  */
@@ -95,9 +95,23 @@ function wrap(channel: ServerChannel, link: LinkConditioner): Peer {
   };
 }
 
+/**
+ * ICE: STUN_URLS (comma-separated) lets the authority discover its public
+ * address behind 1:1 NAT (typical VPS). Defaults to geckos' public STUN list;
+ * NO_STUN=1 disables it (LAN). TURN slot for later: TURN_URL / TURN_USER / TURN_PASS.
+ */
+function serverIceServers(): RTCIceServer[] {
+  if (process.env.NO_STUN) return [];
+  const list: RTCIceServer[] = process.env.STUN_URLS
+    ? [{ urls: process.env.STUN_URLS.split(",").map((s) => s.trim()).filter(Boolean) }]
+    : [...iceServers];
+  if (process.env.TURN_URL) list.push({ urls: process.env.TURN_URL, username: process.env.TURN_USER ?? "", credential: process.env.TURN_PASS ?? "" });
+  return list;
+}
+
 const io = geckos({
-  cors: { origin: "*", allowAuthorization: false },
-  iceServers: process.env.NO_STUN ? [] : iceServers,
+  cors: { origin: process.env.CORS_ORIGIN ?? "*", allowAuthorization: false },
+  iceServers: serverIceServers(),
   portRange: {
     min: Number(process.env.RTC_PORT_MIN ?? 20000),
     max: Number(process.env.RTC_PORT_MAX ?? 20010)
@@ -187,8 +201,17 @@ setInterval(() => {
 // ---- HTTP: health, replays, reports --------------------------------------------
 
 const startedAt = Date.now();
-const pkgVersion = (() => {
-  try { return JSON.parse(readFileSync(path.join(here, "..", "package.json"), "utf8")).version; } catch { return "unknown"; }
+const pkgVersion = process.env.STARCUT_VERSION ?? (() => {
+  // Source tree (server/../package.json) or container (/app/package.json).
+  for (const p of [path.join(here, "..", "package.json"), path.join(here, "package.json")]) {
+    try {
+      const v = JSON.parse(readFileSync(p, "utf8")).version;
+      if (v) return String(v);
+    } catch {
+      // try the next location
+    }
+  }
+  return "unknown";
 })();
 
 function send(res: ServerResponse, code: number, body: unknown, type = "application/json"): void {
@@ -207,7 +230,7 @@ function readBody(req: IncomingMessage): Promise<string> {
 const http = createServer(async (req, res) => {
   const url = (req.url ?? "/").split("?")[0];
   if (req.method === "OPTIONS") return send(res, 204, "");
-  if (url === "/health" || url === "/") {
+  if (url === "/healthz" || url === "/health" || url === "/") {
     return send(res, 200, {
       ok: true,
       game: "starcut",
@@ -253,4 +276,4 @@ const http = createServer(async (req, res) => {
 io.addServer(http);
 http.listen(PORT);
 console.log(`STARCUT authority on :${PORT} (60 Hz sim, 20 Hz interest-managed snapshots)`);
-console.log(`health: http://localhost:${PORT}/health`);
+console.log(`health: http://localhost:${PORT}/healthz`);
