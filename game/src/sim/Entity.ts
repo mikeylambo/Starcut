@@ -94,6 +94,23 @@ export class Entity {
   /** Resource-max latch (fires the "max" moment once per crossing). */
   maxLatched = false;
 
+  // --- defender-favoured parry timing ---
+  /** Sim tick of this entity's last parry/stance press (defender timeline). */
+  parryPressTick = -1e9;
+  /**
+   * A lethal hit that landed but is held for NET.parryGraceTicks: if this
+   * defender's parry press arrives inside the grace, the parry wins instead.
+   * doomBy = attacker id (-1 = none).
+   */
+  doomBy = -1;
+  doomTick = 0;
+  doomHow = "";
+  doomExecute = false;
+
+  get doomed(): boolean {
+    return this.doomBy >= 0;
+  }
+
   constructor(
     readonly id: number,
     public kind: EntityKind,
@@ -159,6 +176,8 @@ export class Entity {
     this.cascadeLeft = 0;
     this.cascadeT = 0;
     this.lungeCuts = 0;
+    this.doomBy = -1;
+    this.parryPressTick = -1e9;
   }
 
   resetResources(): void {
@@ -185,7 +204,8 @@ export class Entity {
       this.revealedUntil, this.revealedTeam,
       BOT_STATES.indexOf(this.botState), this.botTimer, this.patrolIndex,
       [this.kills, this.deaths, this.cuts, this.parries, this.hitsTaken, this.executes, this.firstStrikes, this.ripostes],
-      this.lungeCuts, b(this.maxLatched), this.name
+      this.lungeCuts, b(this.maxLatched), this.name,
+      this.parryPressTick, this.doomBy, this.doomTick, this.doomHow, b(this.doomExecute)
     ];
   }
 
@@ -238,6 +258,11 @@ export class Entity {
     this.lungeCuts = s[i++] as number;
     this.maxLatched = s[i++] === 1;
     this.name = s[i++] as string;
+    this.parryPressTick = s[i++] as number;
+    this.doomBy = s[i++] as number;
+    this.doomTick = s[i++] as number;
+    this.doomHow = s[i++] as string;
+    this.doomExecute = s[i++] === 1;
   }
 }
 

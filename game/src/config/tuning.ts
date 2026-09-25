@@ -118,8 +118,12 @@ export const FLOW = {
 export const RUSHER = {
   /** Flow at/above which the next lunge becomes an execute. */
   executeThreshold: 0.95,
-  /** 1 = the execute cuts through a parry (it is a guaranteed kill). */
-  executeIgnoresParry: 1,
+  /** 1 = the execute cuts through any parry. 0 = parryable, but only inside executeParryWindowTicks. */
+  executeIgnoresParry: 0,
+  /** An execute is parried only if the parry was pressed within this many ticks of the hit (~half the normal window). */
+  executeParryWindowTicks: 5,
+  /** Stagger (s) on a Rusher whose execute was parried — the big payoff. */
+  executeParriedStagger: 1.6,
   /** Kill-cone multiplier on an execute lunge. */
   executeConeMul: 1.35,
   /** Footstep audibility radius (m) at full sprint, for interest management + audio. */
@@ -253,7 +257,13 @@ export const NET = {
   /** Remote entities are drawn this far in the past (ms). */
   interpDelayMs: 110,
   /** Melee lag compensation cap (ms). Past it, the laggy player eats the error. */
-  maxRewindMs: 200,
+  rewindCapMs: 120,
+  /**
+   * Defender-favoured parry tie: a parry pressed within this many ticks of a
+   * hit landing (either side, in the DEFENDER's input timeline) wins. Lethal
+   * hits on players are held this long before they resolve.
+   */
+  parryGraceTicks: 3,
   /**
    * Rewind = attacker one-way latency x owdMul + interp delay x interpMul, capped.
    * owdMul 2 + interpMul 1 rewinds to exactly what the attacker saw on screen.

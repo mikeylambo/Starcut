@@ -346,6 +346,8 @@ export class BotBrain {
   private lungeThisTick(enemy: Entity, peek?: readonly SimInput[]): boolean {
     const inp = peek?.[enemy.id];
     if (!inp || !pressed(inp.attack, enemy.prevAttack)) return false;
+    // Drill dummies are deliberately too slow for an execute (the Execute Drill's lesson).
+    if (enemy.archetype === "rusher" && enemy.flow.value >= RUSHER.executeThreshold) return false;
     const me = this.self;
     const reach = LUNGE.baseRange + LUNGE.flowRange * (enemy.archetype === "rusher" ? enemy.flow.value : 0) + 2;
     return enemy.center.distanceTo(me.center) <= reach;

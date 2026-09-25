@@ -260,7 +260,7 @@ test("Divergence: under jitter + 10% loss, a single press still lands (press cou
   }
   assert.ok(total > 300);
   assert.ok(close / total > 0.85, `prediction within 25cm ${Math.round((close / total) * 100)}% of the time`);
-  assert.ok(NET.maxRewindMs === 200);
+  assert.ok(NET.rewindCapMs === 120);
 });
 
 test("Interpolation: an entity that just entered interest is drawn at its newest pose (no crash)", () => {
@@ -274,4 +274,31 @@ test("Interpolation: an entity that just entered interest is drawn at its newest
   const p = pc.remotePose(1, 1100 + 20 - 0); // target falls between two snapshots that lack entity 1
   assert.ok(p, "pose resolved");
   assert.equal(p!.x, sim.entities[1].feet.x);
+});
+
+test("Shroud is server-side: a distant viewer's snapshot never contains a Shrouded Ghost (even revealed)", () => {
+  const h = harness({ botFill: false });
+  const viewer = h.peer("v");
+  h.room.join(viewer, hello("rusher"));
+  h.room.begin();
+  const sim = h.room.sim!;
+  const me = sim.entities[0];
+  const ghost = sim.entities[1];
+  ghost.archetype = "ghost";
+  place(me, 0, 8, 0, 0);
+  place(ghost, 0, 0, 0, 8); // plain sight, 8 m away
+  ghost.shrouded = true;
+  ghost.charge = 1;
+  ghost.revealedTeam = me.team;
+  ghost.revealedUntil = sim.tick + 600;
+  for (let i = 0; i < 6; i++) {
+    h.room.input(viewer, { q: i + 1, d: packInput(hold(me)) });
+    h.advance();
+  }
+  const snaps = viewer.inbox.filter((w) => w.event === "snap").map((w) => w.data as SnapMsg);
+  assert.ok(snaps.length > 0);
+  for (const s of snaps) {
+    assert.ok(!s.e.some((e) => e[SNAP_IDX.id] === 1), "shrouded ghost withheld");
+    assert.ok(!s.ev.some((e) => (e[1] === 1 || e[2] === 1) && e[0] !== "ki"), "and its events");
+  }
 });

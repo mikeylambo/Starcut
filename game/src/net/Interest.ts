@@ -50,11 +50,13 @@ export function isVisibleTo(sim: Simulation, viewer: Viewer, e: Entity): boolean
   if (e.id === viewer.id) return true;
   if (viewer.team >= 0 && e.team === viewer.team) return true;
   if (!e.alive) return false;
-  if (viewer.team >= 0 && e.revealedTeam === viewer.team && e.revealedUntil > sim.tick) return true;
   const c = e.center;
   const dist = c.distanceTo(viewer.eye);
-  if (dist > NET.viewDistance) return false;
+  // Shroud is enforced HERE, server-side: past shroud range an enemy never
+  // receives the Ghost's pose or its events — not even via a marker reveal.
   if (e.shrouded && dist > GHOST.shroudRange) return false;
+  if (viewer.team >= 0 && e.revealedTeam === viewer.team && e.revealedUntil > sim.tick) return true;
+  if (dist > NET.viewDistance) return false;
   if (dist <= audibleRadius(e)) return true;
   const eye = viewer.eye;
   if (!segmentBlocked(eye.x, eye.y, eye.z, c.x, c.y, c.z, sim.map.solids)) return true;

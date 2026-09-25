@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { Rng } from "../src/core/Rng";
+import { NET } from "../src/config/tuning";
 import { Simulation, NOOP_EVENTS, type SimEvents, type KillHow } from "../src/sim/Simulation";
 import type { MatchConfig, SeatConfig } from "../src/sim/MatchConfig";
 import { emptyInput, quantizeInput, type Archetype, type SimInput } from "../src/sim/types";
@@ -50,7 +51,7 @@ export function press(e: Entity, button: "attack" | "parry" | "ability" | "jump"
 
 export interface Recorded {
   kills: { killer: number; victim: number; how: KillHow }[];
-  parries: { d: number; a: number; stance: boolean }[];
+  parries: { d: number; a: number; stance: boolean; heavy: boolean; grace: boolean }[];
   trades: { w: number; l: number }[];
 }
 
@@ -59,7 +60,7 @@ export function recorder(): { ev: SimEvents; log: Recorded } {
   const ev: SimEvents = {
     ...NOOP_EVENTS,
     kill: (k, v, how) => log.kills.push({ killer: k.id, victim: v.id, how }),
-    parry: (d, a, stance) => log.parries.push({ d: d.id, a: a.id, stance }),
+    parry: (d, a, info) => log.parries.push({ d: d.id, a: a.id, ...info }),
     trade: (w, l) => log.trades.push({ w: w.id, l: l.id })
   };
   return { ev, log };
@@ -94,3 +95,8 @@ export function runScripted(config: MatchConfig, ticks: number, seed: number, ev
 }
 
 export const v3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+
+/** Step idle ticks so held (grace) hits resolve. */
+export function settle(sim: Simulation, ev: SimEvents = NOOP_EVENTS, n = NET.parryGraceTicks): void {
+  for (let i = 0; i < n; i++) sim.step(sim.players.map((p) => hold(p)), ev);
+}

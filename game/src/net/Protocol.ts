@@ -9,7 +9,7 @@ import type { Archetype, PackedInput } from "../sim/types";
  * geckos.io (WebRTC data channels): inputs and snapshots ride the UNRELIABLE
  * channel (latest-wins), everything else is reliable.
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 export const DEFAULT_PORT = 9208;
 export const SNAP_EVERY = 3; // 60 Hz sim / 3 = 20 Hz snapshots
 export const PING_EVERY = 60; // 1 Hz RTT probe
@@ -117,7 +117,7 @@ export function recordingEvents(buf: NetEvent[]): SimEvents {
     markerThrown: (e) => p("mt", e),
     reveal: (g, t) => p("rv", g, t),
     kill: (k, v, how) => p("ki", k, v, how),
-    parry: (d, a, stance) => p("pr", d, a, stance ? 1 : 0),
+    parry: (d, a, info) => p("pr", d, a, (info.stance ? 1 : 0) + (info.heavy ? 2 : 0) + (info.grace ? 4 : 0)),
     hitTaken: (v, a) => p("ht", v, a),
     trade: (w, l) => p("tr", w, l),
     botWindup: (b) => p("bw", b),
@@ -150,7 +150,7 @@ export function dispatchNetEvent(e: NetEvent, ev: SimEvents, entities: Entity[],
     case "mt": ev.markerThrown(A); break;
     case "rv": if (B) ev.reveal(A, B); break;
     case "ki": if (B) ev.kill(A, B, c as KillHow); break;
-    case "pr": if (B) ev.parry(A, B, c === 1); break;
+    case "pr": if (B) { const n = c as number; ev.parry(A, B, { stance: (n & 1) !== 0, heavy: (n & 2) !== 0, grace: (n & 4) !== 0 }); } break;
     case "ht": if (B) ev.hitTaken(A, B); break;
     case "tr": if (B) ev.trade(A, B); break;
     case "bw": ev.botWindup(A); break;

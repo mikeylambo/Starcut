@@ -24,7 +24,7 @@ import {
  *     a human joining mid-match takes a bot's seat, a leaver's seat goes back
  *     to a bot (that IS the rejoin path);
  *   - melee lag compensation: each seat's strikes rewind targets by its
- *     measured latency (capped at NET.maxRewindMs), applied as a recorded
+ *     measured latency (capped at NET.rewindCapMs), applied as a recorded
  *     command so replays reproduce server outcomes exactly;
  *   - interest-managed snapshots (net/Interest.ts) — never full state;
  *   - input sanity: malformed / stale / flooding input is dropped.
@@ -281,8 +281,8 @@ export class Room {
     // Lag compensation from measured latency (recorded, so replays agree).
     for (let i = 0; i < this.seats.length; i++) {
       const human = !!this.seats[i].peer;
-      const ms = human ? Math.min(NET.maxRewindMs, this.owd[i] * NET.rewindOwdMul + (this.owd[i] > 0 ? NET.interpDelayMs * NET.rewindInterpMul : 0)) : 0;
-      const ticks = Math.round(Math.min(NET.maxRewindMs, ms) / (TICK * 1000));
+      const ms = human ? Math.min(NET.rewindCapMs, this.owd[i] * NET.rewindOwdMul + (this.owd[i] > 0 ? NET.interpDelayMs * NET.rewindInterpMul : 0)) : 0;
+      const ticks = Math.round(Math.min(NET.rewindCapMs, ms) / (TICK * 1000));
       if (ticks !== this.lagTicks[i]) {
         this.lagTicks[i] = ticks;
         this.command({ type: "lag", seat: i, ticks });

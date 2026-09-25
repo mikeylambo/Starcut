@@ -2,12 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Simulation, NOOP_EVENTS, SWING_ACTIVE } from "../src/sim/Simulation";
 import { matchConfig, practiceConfig } from "../src/sim/MatchConfig";
-import { emptyInput } from "../src/sim/types";
+import { emptyInput, quantizeInput } from "../src/sim/types";
 import { BotBrain } from "../src/bots/BotBrain";
 import { ReplayPlayer, ReplayRecorder, applyCommand } from "../src/sim/Replay";
-import { GHOST, PLAYER, REFLEX, RUSHER } from "../src/config/tuning";
+import { GHOST, NET, PARRY, PLAYER, REFLEX, RUSHER } from "../src/config/tuning";
 import { dsin, dcos, datan2 } from "../src/core/DetMath";
-import { duelConfig, hold, place, press, recorder, runScripted } from "./helpers";
+import { duelConfig, hold, place, press, recorder, runScripted, settle } from "./helpers";
 
 // ---------------------------------------------------------------------------
 // Determinism (Stage 1)
@@ -113,6 +113,7 @@ test("PvP: a lunge kills an enemy player", () => {
   const { ev, log } = recorder();
   sim.step([hold(a), hold(b)], ev);
   sim.step([press(a, "attack"), hold(b)], ev);
+  settle(sim, ev);
   assert.deepEqual(log.kills.map((k) => [k.killer, k.victim]), [[0, 1]]);
   assert.equal(a.kills, 1);
   assert.equal(sim.match.teamScores[0], 1);
@@ -134,6 +135,7 @@ test("PvP: parry pressed on the SAME tick as the lunge negates it (windows open 
   a.staggerT = PLAYER.staggerTime;
   b.yaw += 0.5;
   sim.step([hold(a), press(b, "attack")], ev);
+  settle(sim, ev);
   assert.deepEqual(log.kills.map((k) => [k.killer, k.victim]), [[1, 0]]);
 });
 
@@ -154,20 +156,35 @@ test("PvP: bots target the nearest valid enemy, not a fixed player", () => {
 // Archetype kits (Stage 6)
 // ---------------------------------------------------------------------------
 
-test("Rusher execute: at max Flow the lunge cuts through a parry and empties Flow", () => {
-  const sim = new Simulation(duelConfig([{ archetype: "rusher", team: 0 }, { archetype: "reflex", team: 1 }]));
-  const [a, b] = sim.players;
-  place(a, 0, 6, 0, 2);
-  place(b, 0, 2, 0, 6);
-  sim.step([hold(a), hold(b)], NOOP_EVENTS);
-  a.flow.set(1);
-  const { ev, log } = recorder();
-  sim.step([press(a, "attack"), press(b, "parry")], ev);
-  assert.equal(log.parries.length, 0, "an execute is not parried");
-  assert.deepEqual(log.kills.map((k) => [k.killer, k.victim, k.how]), [[0, 1, "execute"]]);
-  for (let i = 0; i < 30; i++) sim.step([hold(a), hold(b)], ev);
-  assert.equal(a.flow.value, 0, "execute empties Flow");
-  assert.ok(RUSHER.executeThreshold <= 1);
+test("Rusher execute: parryable only in the tight window (heavy stagger); otherwise it cuts through and empties Flow", () => {
+  for (const early of [false, true]) {
+    const sim = new Simulation(duelConfig([{ archetype: "rusher", team: 0 }, { archetype: "reflex", team: 1 }]));
+    const [a, b] = sim.players;
+    place(a, 0, 6, 0, 2);
+    place(b, 0, 2, 0, 6);
+    sim.step([hold(a), hold(b)], NOOP_EVENTS);
+    const { ev, log } = recorder();
+    if (early) {
+      // Parry 8 ticks BEFORE: the normal window is still open, but it is outside the execute window.
+      sim.step([hold(a), press(b, "parry")], ev);
+      for (let i = 0; i < 7; i++) sim.step([hold(a), hold(b)], ev);
+      assert.ok(b.parry.isWindowOpen && 8 > RUSHER.executeParryWindowTicks);
+      a.flow.set(1);
+      sim.step([press(a, "attack"), hold(b)], ev);
+      settle(sim, ev);
+      assert.equal(log.parries.length, 0, "an execute beats a stale parry");
+      assert.deepEqual(log.kills.map((k) => [k.killer, k.victim, k.how]), [[0, 1, "execute"]]);
+      for (let i = 0; i < 30; i++) sim.step([hold(a), hold(b)], ev);
+      assert.equal(a.flow.value, 0, "execute empties Flow");
+    } else {
+      a.flow.set(1);
+      sim.step([press(a, "attack"), press(b, "parry")], ev);
+      settle(sim, ev);
+      assert.equal(log.kills.length, 0, "a tight parry stops the execute");
+      assert.deepEqual(log.parries.map((p) => [p.d, p.a, p.heavy]), [[1, 0, true]]);
+      assert.ok(Math.abs(a.staggerT - (RUSHER.executeParriedStagger - 1 / 60 * NET.parryGraceTicks)) < 0.05, "heavy stagger");
+    }
+  }
 });
 
 test("Ghost first strike: unseen, the cut goes through a parry; seen, it is parried", () => {
@@ -255,6 +272,7 @@ test("Kill-trade: same-tick lunges — the higher normalized resource wins (Rush
     sg.charge = charge;
     const { ev, log } = recorder();
     s.step([press(sa, "attack"), press(sg, "attack")], ev);
+    settle(s, ev);
     assert.equal(log.trades.length, 1, "a trade happened");
     assert.equal(log.trades[0].w, winner);
     assert.deepEqual(log.kills.map((k) => k.killer), [winner]);
@@ -301,6 +319,7 @@ test("Lag compensation: a strike tests the target where the attacker saw it", ()
     const bi = hold(b);
     bi.moveX = 1;
     sim.step([press(a, "attack"), bi], ev);
+    settle(sim, ev);
     return log.kills.length;
   };
   assert.equal(run(0), 0, "without rewind the strafe dodges");
@@ -347,5 +366,67 @@ test("Tuning is live: the sim reads PLAYER values each tick", () => {
     assert.ok(g.horizontalSpeed < 3.2, `speed follows live tuning (${g.horizontalSpeed})`);
   } finally {
     PLAYER.baseSpeed = saved;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Combat integrity (Brief v4 §1): defender-favoured parry grace
+// ---------------------------------------------------------------------------
+
+/**
+ * A fixed duel: A lunges at B on tick `strikeAt`; B presses parry on tick
+ * `parryAt` (relative ticks, B's own input timeline). The normal window is
+ * shrunk to 1 tick so only the grace can save a mistimed press.
+ */
+function graceDuel(parryOffset: number) {
+  const saved = PARRY.window;
+  PARRY.window = 1 / 60;
+  try {
+    const sim = new Simulation(duelConfig([{ archetype: "rusher", team: 0 }, { archetype: "rusher", team: 1 }]));
+    const [a, b] = sim.players;
+    place(a, 0, 6, 0, 2);
+    place(b, 0, 2, 0, 6);
+    const { ev, log } = recorder();
+    const strikeAt = 10;
+    for (let t = 0; t < 30; t++) {
+      const ai = t === strikeAt ? press(a, "attack") : hold(a);
+      const bi = t === strikeAt + parryOffset ? press(b, "parry") : hold(b);
+      sim.step([ai, bi], ev);
+    }
+    return log;
+  } finally {
+    PARRY.window = saved;
+  }
+}
+
+test("Parry grace: a press just BEFORE the hit (window already closed) still parries", () => {
+  const log = graceDuel(-2);
+  assert.equal(log.kills.length, 0);
+  assert.equal(log.parries.length, 1);
+  assert.ok(log.parries[0].grace, "resolved via grace");
+});
+
+test("Parry grace: a press just AFTER the hit, inside the grace, wins — the held hit is cancelled", () => {
+  const log = graceDuel(NET.parryGraceTicks);
+  assert.equal(log.kills.length, 0, "no kill");
+  assert.deepEqual(log.parries.map((p) => [p.d, p.a, p.grace]), [[1, 0, true]]);
+});
+
+test("Parry grace: a press outside the grace loses", () => {
+  const late = graceDuel(NET.parryGraceTicks + 2);
+  assert.deepEqual(late.kills.map((k) => [k.killer, k.victim]), [[0, 1]]);
+  assert.equal(late.parries.length, 0);
+  const early = graceDuel(-(NET.parryGraceTicks + 2));
+  assert.deepEqual(early.kills.map((k) => [k.killer, k.victim]), [[0, 1]]);
+});
+
+test("Input quantization is idempotent everywhere, including yaw at ±pi (replay/prediction parity)", () => {
+  for (let a = -20; a <= 20; a += 0.0137) {
+    for (const yaw of [a, Math.PI, -Math.PI, Math.PI * 3, -Math.PI + 1e-9]) {
+      const q1 = quantizeInput({ ...emptyInput(), yaw, pitch: Math.sin(a) });
+      const q2 = quantizeInput(q1);
+      assert.equal(q2.yaw, q1.yaw, `yaw ${yaw}`);
+      assert.equal(q2.pitch, q1.pitch);
+    }
   }
 });

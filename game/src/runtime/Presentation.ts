@@ -150,6 +150,9 @@ export class Presentation {
     }
   }
 
+  /** Dev overlay hook: a parry that involved the focus resolved via the grace window. */
+  onGraceParry: (() => void) | null = null;
+
   /** Set by the runtime: following a player in first person vs chase cam. */
   firstPersonFollow = false;
 
@@ -190,17 +193,18 @@ export class Presentation {
         }
       },
       kill: (k, v, how) => this.onKill(k, v, how),
-      parry: (d, a, stance) => {
+      parry: (d, a, info) => {
         const at = this.posOf(d).lerp(this.posOf(a), 0.5);
+        if (info.grace && (this.isFocus(d) || this.isFocus(a))) this.onGraceParry?.();
         if (this.isFocus(d)) {
           this.sound("parry.success");
           this.visuals.onParry(at);
-          this.hud.showBanner(stance ? "COUNTER" : "PARRY", stance ? "#ffb830" : "#37d6ff");
-          this.startHitStop(PARRY.successHitStop);
+          this.hud.showBanner(info.heavy ? "EXECUTE PARRIED" : info.stance ? "COUNTER" : "PARRY", info.heavy ? "#ffffff" : info.stance ? "#ffb830" : "#37d6ff");
+          this.startHitStop(PARRY.successHitStop * (info.heavy ? 2 : 1));
         } else if (this.isFocus(a)) {
           this.sound("parry.success");
           this.visuals.onHit();
-          this.hud.showBanner("PARRIED", "#ff5a3c");
+          this.hud.showBanner(info.heavy ? "EXECUTE PARRIED" : "PARRIED", "#ff5a3c");
           this.shake = 0.5;
         } else {
           this.visuals.onParry(at, false);

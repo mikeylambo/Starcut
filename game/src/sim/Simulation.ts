@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { BOT, FLOW, GHOST, LUNGE, MATCH, PARRY, PLAYER, REFLEX, RUSHER } from "../config/tuning";
+import { BOT, FLOW, GHOST, LUNGE, MATCH, NET, PARRY, PLAYER, REFLEX, RUSHER } from "../config/tuning";
 import { dcos, dlen } from "../core/DetMath";
 import { lungeConnects } from "../combat/strike";
 import { pointInAnySolid } from "../world/Physics";
@@ -31,6 +31,13 @@ import { hasLineOfSight, inView } from "./Visibility";
  *   6. respawns, Ghost visibility, match / drill state
  */
 
+/** stance: Reflex counter-stance. heavy: an execute was parried. grace: won via the defender-favoured grace. */
+export interface ParryInfo {
+  stance: boolean;
+  heavy: boolean;
+  grace: boolean;
+}
+
 export type KillHow = "lunge" | "execute" | "first-strike" | "swing" | "riposte" | "cascade";
 
 export interface SimEvents {
@@ -42,7 +49,7 @@ export interface SimEvents {
   markerThrown(e: Entity): void;
   reveal(ghost: Entity, target: Entity): void;
   kill(killer: Entity, victim: Entity, how: KillHow): void;
-  parry(defender: Entity, attacker: Entity, stance: boolean): void;
+  parry(defender: Entity, attacker: Entity, info: ParryInfo): void;
   /** Non-lethal telegraph-swing hit (practice). */
   hitTaken(victim: Entity, attacker: Entity): void;
   trade(winner: Entity, loser: Entity): void;
@@ -251,6 +258,8 @@ export class Simulation {
       this.applyLook(e, inp);
       this.openParry(e, inp, ev);
     }
+    // A held lethal hit loses to a parry pressed inside the grace (defender timeline).
+    for (const e of players) if (e.doomed) this.tryGraceParry(e, ev);
     // 2. attacks + abilities
     for (const e of players) {
       const inp = inputs[e.id] ?? emptyInput();
@@ -298,7 +307,10 @@ export class Simulation {
       }
     }
 
-    // 6. respawns, ghost sight, match
+    // 6. held hits resolve, respawns, ghost sight, match
+    for (const e of players) {
+      if (e.doomed && this.tick - e.doomTick >= NET.parryGraceTicks) this.resolveDoom(e, ev);
+    }
     for (const e of players) this.stepLife(e, dt, ev);
     this.updateGhostSight(dt, ev);
     this.stepMatch(dt, ev);
@@ -337,12 +349,14 @@ export class Simulation {
     if (!e.alive || e.staggered) return;
     // Parry (every archetype). Not while a lunge or swing is committed.
     if (pressed(inp.parry, e.prevParry) && !e.lunge.isActive && e.swingPhase !== SWING_ACTIVE) {
+      e.parryPressTick = this.tick; // defender timeline, even if the window is on cooldown
       if (e.parry.start(PARRY.window)) ev.parryAttempt(e);
     }
     // Reflex signature: counter-stance — a longer window that ripostes on success.
     if (e.archetype === "reflex" && pressed(inp.ability, e.prevAbility) && e.stanceCd <= 0 && e.swingPhase !== SWING_ACTIVE) {
       if (e.parry.state === "window") e.parry.reset(); // upgrade an open window into a stance
       if (e.parry.start(REFLEX.stanceTime)) {
+        e.parryPressTick = this.tick;
         e.stanceT = REFLEX.stanceTime;
         e.stanceCd = REFLEX.stanceCooldown;
         ev.stance(e);
@@ -353,7 +367,7 @@ export class Simulation {
   /** Returns this tick's jump press. */
   private startActions(e: Entity, inp: SimInput, ev: SimEvents): boolean {
     const jump = pressed(inp.jump, e.prevJump);
-    if (!e.alive || e.staggered) return false;
+    if (!e.alive || e.staggered || e.doomed) return false; // a held hit may only parry
     const attack = pressed(inp.attack, e.prevAttack);
 
     if (attack && !e.parry.isWindowOpen) {
@@ -590,14 +604,16 @@ export class Simulation {
     const toBot = new THREE.Vector3().subVectors(bot.center, target.eye).normalize();
     const facingOk = toBot.dot(target.aimDir) >= dcos(PARRY.facingHalfAngle);
 
-    if (target.parry.isWindowOpen && facingOk && flat <= PARRY.range && !target.staggered) {
+    const age = this.tick - target.parryPressTick;
+    const graceBefore = !target.parry.isWindowOpen && age >= 0 && age <= NET.parryGraceTicks;
+    if ((target.parry.isWindowOpen || graceBefore) && facingOk && flat <= PARRY.range && !target.staggered) {
       const stance = target.stanceT > 0;
-      target.parry.consumeSuccess();
+      if (target.parry.isWindowOpen) target.parry.consumeSuccess();
       target.stanceT = 0;
       staggerPracticeBot(bot);
       target.parries += 1;
       this.parryReward(target, stance);
-      ev.parry(target, bot, stance);
+      ev.parry(target, bot, { stance, heavy: false, grace: graceBefore });
       if (stance) this.applyKill({ a: target, t: bot, kind: "riposte", unblockable: true, execute: false, firstStrike: false }, ev);
     } else {
       target.flow.takeHit();
@@ -616,13 +632,60 @@ export class Simulation {
   // ---- strike resolution ----------------------------------------------------
 
   private canBeStruck(a: Entity, t: Entity): boolean {
-    return t.alive && this.isEnemy(a, t) && !(t.isPlayer && t.graceT > 0);
+    return t.alive && !t.doomed && this.isEnemy(a, t) && !(t.isPlayer && t.graceT > 0);
+  }
+
+  /**
+   * Can defender `d` parry contact `c` on this tick? Defender-favoured: the
+   * window being open counts, and so does a press within NET.parryGraceTicks
+   * before the hit (a press AFTER the hit is handled by tryGraceParry while the
+   * hit is held). An execute is only parryable by a press within
+   * RUSHER.executeParryWindowTicks of the hit.
+   */
+  private parryCheck(d: Entity, c: Contact): { ok: boolean; grace: boolean } {
+    if (c.unblockable || !d.isPlayer || d.staggered || d.doomed || !this.facing(d, c.a)) return { ok: false, grace: false };
+    const age = this.tick - d.parryPressTick;
+    const recent = age >= 0 && age <= NET.parryGraceTicks;
+    if (c.execute) {
+      const inTight = age >= 0 && age <= RUSHER.executeParryWindowTicks;
+      return { ok: inTight && (d.parry.isWindowOpen || recent), grace: !d.parry.isWindowOpen };
+    }
+    return { ok: d.parry.isWindowOpen || recent, grace: !d.parry.isWindowOpen && recent };
+  }
+
+  /** A held (doomed) defender pressed parry inside the grace: the parry wins retroactively. */
+  private tryGraceParry(d: Entity, ev: SimEvents): void {
+    const since = this.tick - d.doomTick;
+    if (since > NET.parryGraceTicks || d.parryPressTick <= d.doomTick) return;
+    if (d.doomExecute && since > RUSHER.executeParryWindowTicks) return;
+    const a = this.entities[d.doomBy];
+    if (!a || !this.facing(d, a)) return;
+    const stance = d.stanceT > 0;
+    const heavy = d.doomExecute;
+    d.doomBy = -1;
+    if (d.parry.isWindowOpen) d.parry.consumeSuccess();
+    d.stanceT = 0;
+    d.parries += 1;
+    this.parryReward(d, stance);
+    if (a.alive) this.staggerPlayer(a, heavy);
+    ev.parry(d, a, { stance, heavy, grace: true });
+    if (stance && a.alive && a.center.distanceTo(d.center) <= REFLEX.riposteRange + 1) {
+      this.applyKill({ a: d, t: a, kind: "riposte", unblockable: true, execute: false, firstStrike: false }, ev);
+    }
+  }
+
+  /** The grace ran out: the held hit resolves as a kill. */
+  private resolveDoom(t: Entity, ev: SimEvents): void {
+    const a = this.entities[t.doomBy];
+    const how = t.doomHow as KillHow;
+    t.doomBy = -1;
+    if (a) this.finalizeKill(a, t, how, ev);
   }
 
   private gatherContacts(): Contact[] {
     const out: Contact[] = [];
     for (const a of this.players) {
-      if (!a.alive || a.staggered) continue;
+      if (!a.alive || a.staggered || a.doomed) continue;
 
       if (a.lunge.isActive) {
         const origin = a.eye;
@@ -702,18 +765,19 @@ export class Simulation {
     contacts.sort((x, y) => x.a.id - y.a.id || x.t.id - y.t.id);
 
     // --- parries (windows opened earlier this tick already count) ---
-    const parriedAttackers = new Set<Entity>();
+    const parriedAttackers = new Map<Entity, boolean>(); // attacker -> heavy (execute parried)
     const parryingDefenders = new Map<Entity, boolean>(); // defender -> stance
     const lethal: Contact[] = [];
     const ripostes: Contact[] = [];
     for (const c of contacts) {
       if (parriedAttackers.has(c.a)) continue;
       const d = c.t;
-      if (!c.unblockable && d.isPlayer && d.parry.isWindowOpen && !d.staggered && this.facing(d, c.a)) {
-        parriedAttackers.add(c.a);
+      const check = this.parryCheck(d, c);
+      if (check.ok) {
+        parriedAttackers.set(c.a, c.execute);
         const stance = d.stanceT > 0;
         if (!parryingDefenders.has(d)) parryingDefenders.set(d, stance);
-        ev.parry(d, c.a, stance);
+        ev.parry(d, c.a, { stance, heavy: c.execute, grace: check.grace });
         d.parries += 1;
         this.parryReward(d, stance);
         if (stance && c.a.center.distanceTo(d.center) <= REFLEX.riposteRange + 1) {
@@ -724,10 +788,10 @@ export class Simulation {
       lethal.push(c);
     }
     for (const [d] of parryingDefenders) {
-      d.parry.consumeSuccess();
+      if (d.parry.isWindowOpen) d.parry.consumeSuccess();
       d.stanceT = 0;
     }
-    for (const a of parriedAttackers) this.staggerPlayer(a);
+    for (const [a, heavy] of parriedAttackers) this.staggerPlayer(a, heavy);
     const pending = lethal.filter((c) => !parriedAttackers.has(c.a)).concat(ripostes);
 
     // --- kill-trades: A->B and B->A on the same tick ---
@@ -758,7 +822,8 @@ export class Simulation {
    * lunge initiator wins (earlier lunge, then lower id).
    */
   private tradeWinner(c1: Contact, c2: Contact): Contact {
-    if (c1.unblockable !== c2.unblockable) return c1.unblockable ? c1 : c2;
+    const p1 = c1.unblockable || c1.execute, p2 = c2.unblockable || c2.execute;
+    if (p1 !== p2) return p1 ? c1 : c2;
     const r1 = c1.a.resource, r2 = c2.a.resource;
     if (Math.abs(r1 - r2) > 1e-9) return r1 > r2 ? c1 : c2;
     const l1 = c1.kind === "lunge", l2 = c2.kind === "lunge";
@@ -767,8 +832,8 @@ export class Simulation {
     return c1.a.id < c2.a.id ? c1 : c2;
   }
 
-  private staggerPlayer(a: Entity): void {
-    a.staggerT = PLAYER.staggerTime;
+  private staggerPlayer(a: Entity, heavy = false): void {
+    a.staggerT = heavy ? RUSHER.executeParriedStagger : PLAYER.staggerTime;
     if (a.lunge.execute) a.flow.set(0);
     a.lunge.cancelToReady();
     a.swingPhase = SWING_READY;
@@ -777,11 +842,30 @@ export class Simulation {
     a.vel.multiplyScalar(0.2);
   }
 
+  /** A strike connected: attacker bookkeeping now; the kill now, or held for the parry grace. */
   private applyKill(c: Contact, ev: SimEvents): void {
     const { a, t } = c;
-    if (!t.alive) return;
+    if (!t.alive || t.doomed) return;
     const how: KillHow = c.execute ? "execute" : c.firstStrike ? "first-strike" : c.kind;
+    if (c.kind === "lunge") {
+      a.lunge.registerConnect();
+      a.lungeCuts += 1;
+    }
+    if (c.kind === "swing") a.swingHits |= 1 << t.id;
 
+    // Defender-favoured: a parryable hit on a player is held for the grace.
+    if (t.isPlayer && !c.unblockable && c.kind !== "riposte" && NET.parryGraceTicks > 0) {
+      t.doomBy = a.id;
+      t.doomTick = this.tick;
+      t.doomHow = how;
+      t.doomExecute = c.execute;
+      return;
+    }
+    this.finalizeKill(a, t, how, ev);
+  }
+
+  private finalizeKill(a: Entity, t: Entity, how: KillHow, ev: SimEvents): void {
+    if (!t.alive) return;
     if (t.isPlayer) this.playerDeath(t, a);
     else killPracticeBot(t);
 
@@ -790,14 +874,9 @@ export class Simulation {
       a.kills += 1;
       if (this.config.teams && a.team >= 0 && a.team < 2) this.match.teamScores[a.team] += 1;
     }
-    if (c.kind === "lunge") {
-      a.lunge.registerConnect();
-      a.lungeCuts += 1;
-    }
-    if (c.kind === "swing") a.swingHits |= 1 << t.id;
-    if (c.execute) a.executes += 1;
-    if (c.firstStrike) a.firstStrikes += 1;
-    if (c.kind === "riposte") a.ripostes += 1;
+    if (how === "execute") a.executes += 1;
+    if (how === "first-strike") a.firstStrikes += 1;
+    if (how === "riposte") a.ripostes += 1;
 
     if (a.archetype === "rusher") a.flow.addKill();
     if (a.archetype === "reflex") {

@@ -78,7 +78,7 @@ export const DRILLS: DrillInfo[] = [
   { id: "parry-trial", label: "Parry Trial", archetype: null, description: "40 seconds. Land clean parries, avoid the swings.", duelists: [], practiceTargets: true },
   {
     id: "execute-drill", label: "Execute Drill", archetype: "rusher",
-    description: "Duelists parry every normal lunge. Reach max Flow and land 3 executes — they cut through.",
+    description: "Duelists parry every normal lunge but are too slow for an execute. Reach max Flow and land 3 executes.",
     duelists: [{ archetype: "reflex", personality: "duelist" }, { archetype: "rusher", personality: "duelist" }], practiceTargets: false
   },
   {
