@@ -23,6 +23,7 @@
     "src/net/Protocol.ts",
     "src/net/Room.ts",
     "src/net/PredictionClient.ts",
+    "src/net/LinkConditioner.ts",
     "test/**/*.ts"
   ]
 }

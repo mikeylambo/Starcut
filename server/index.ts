@@ -7,6 +7,7 @@ import { Room, type Peer } from "../game/src/net/Room";
 import { DEFAULT_PORT, PROTOCOL_VERSION, sanitizeCode, sanitizeName, type HelloMsg, type Queue, type SpecMsg } from "../game/src/net/Protocol";
 import { ARCHETYPES, TICK, type Archetype } from "../game/src/sim/types";
 import type { ReplayData } from "../game/src/sim/Replay";
+import { LinkConditioner, profileFromEnv } from "../game/src/net/LinkConditioner";
 
 /**
  * The STARCUT authority: one Node process, many independent rooms, each
@@ -71,15 +72,25 @@ function quickRoom(queue: Queue, difficulty: number): Room {
   return best ?? createRoom(queue, true, difficulty, "timed");
 }
 
-function wrap(channel: ServerChannel): Peer {
+/**
+ * Optional server-side link conditioning (lag harness): STARCUT_LINK=rough, or
+ * STARCUT_LAG=150 STARCUT_JITTER=25 STARCUT_LOSS=2 STARCUT_DUP=1 STARCUT_REORDER=2.
+ * Applied per peer to both directions.
+ */
+const serverLink = profileFromEnv(process.env);
+if (serverLink) console.log(`link conditioner ON: ${JSON.stringify(serverLink)}`);
+
+function wrap(channel: ServerChannel, link: LinkConditioner): Peer {
   return {
     id: String(channel.id),
     send: (event, data, reliable) => {
-      try {
-        channel.emit(event, data as never, reliable ? { reliable: true } : undefined);
-      } catch {
-        // channel closing
-      }
+      link.pass(() => {
+        try {
+          channel.emit(event, data as never, reliable ? { reliable: true } : undefined);
+        } catch {
+          // channel closing
+        }
+      }, reliable);
     }
   };
 }
@@ -94,10 +105,14 @@ const io = geckos({
 });
 
 io.onConnection((channel) => {
-  const peer = wrap(channel);
+  const link = new LinkConditioner();
+  if (serverLink) link.set(serverLink);
+  const peer = wrap(channel, link);
+  const on = (event: string, reliable: boolean, fn: (raw: unknown) => void) =>
+    channel.on(event, (raw) => link.pass(() => fn(raw), reliable));
   peers.set(peer.id, peer);
 
-  channel.on("hello", (raw) => {
+  on("hello", true, (raw) => {
     if (peerRoom.has(peer.id)) return;
     const h = raw as Partial<HelloMsg>;
     if (h?.v !== PROTOCOL_VERSION) {
@@ -125,11 +140,11 @@ io.onConnection((channel) => {
     console.log(`[room ${room.code}] ${sanitizeName(h.name)} joined (${room.humanCount} human, ${room.state})`);
   });
 
-  channel.on("i", (raw) => peerRoom.get(peer.id)?.input(peer, raw));
-  channel.on("pong", (raw) => peerRoom.get(peer.id)?.pong(peer, Number((raw as { t?: number })?.t ?? 0), Date.now()));
-  channel.on("start", () => peerRoom.get(peer.id)?.requestStart(peer));
-  channel.on("spec", (raw) => peerRoom.get(peer.id)?.spec(peer, raw as SpecMsg));
-  channel.on("pick", (raw) => peerRoom.get(peer.id)?.pick(peer, (raw as { archetype?: Archetype })?.archetype as Archetype));
+  on("i", false, (raw) => peerRoom.get(peer.id)?.input(peer, raw));
+  on("pong", false, (raw) => peerRoom.get(peer.id)?.pong(peer, Number((raw as { t?: number })?.t ?? 0), Date.now()));
+  on("start", true, () => peerRoom.get(peer.id)?.requestStart(peer));
+  on("spec", false, (raw) => peerRoom.get(peer.id)?.spec(peer, raw as SpecMsg));
+  on("pick", true, (raw) => peerRoom.get(peer.id)?.pick(peer, (raw as { archetype?: Archetype })?.archetype as Archetype));
 
   channel.onDisconnect(() => {
     const room = peerRoom.get(peer.id);

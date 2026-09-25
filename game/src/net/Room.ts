@@ -17,9 +17,10 @@ import {
  * simulated latency). Ported from Jetpack Arena's server/index.ts:
  *
  *   - 60 Hz sim, 20 Hz snapshots, per-seat input acks, 1 Hz RTT probe;
- *   - unreliable latest-wins input (stale/out-of-order packets dropped) behind a
- *     3-deep jitter buffer; at most ONE input consumed per tick per seat, and a
- *     backlog is skipped forward (latest wins) rather than adding latency;
+ *   - unreliable latest-wins input (stale/out-of-order packets dropped), each
+ *     packet carrying the previous two inputs so a lost one is filled in, behind
+ *     an adaptive 1-4 deep jitter buffer; at most ONE input consumed per tick per
+ *     seat, and a backlog is skipped forward (latest wins) rather than adding latency;
  *   - empty seats are server-side bots, so one human still gets a full match;
  *     a human joining mid-match takes a bot's seat, a leaver's seat goes back
  *     to a bot (that IS the rejoin path);
@@ -52,7 +53,10 @@ export interface RoomOptions {
   onEnd?: (replay: ReplayData, end: EndMsg) => void;
 }
 
-const JITTER_BUFFER = 3;
+/** Adaptive jitter buffer: depth grows on starvation (max), decays after a calm spell. */
+const JITTER_MIN = 1;
+const JITTER_MAX = 4;
+const JITTER_DECAY_TICKS = 300;
 const MAX_INPUTS_PER_SEC = 150; // 60 expected; anything past this is a flood
 
 export class Room {
@@ -68,6 +72,9 @@ export class Room {
   private latestSeq: number[] = [];
   /** Per-seat jitter buffer of inputs received but not yet applied. */
   private inbuf: { q: number; i: SimInput }[][] = [];
+  private jitterTarget: number[] = [];
+  private refilling: boolean[] = [];
+  private lastStarve: number[] = [];
   private appliedSeq: number[] = [];
   private owd: number[] = [];
   private lagTicks: number[] = [];
@@ -192,8 +199,9 @@ export class Room {
   input(peer: Peer, raw: unknown): void {
     const seat = this.seatOf(peer);
     if (seat < 0 || !this.sim) return;
-    const msg = raw as { q?: unknown; d?: unknown };
-    if (!msg || typeof msg.q !== "number" || !Number.isInteger(msg.q) || !isValidPacked(msg.d)) {
+    const msg = raw as { q?: unknown; d?: unknown; r?: unknown };
+    const redundant = Array.isArray(msg?.r) ? (msg.r as unknown[]).slice(0, 2) : [];
+    if (!msg || typeof msg.q !== "number" || !Number.isInteger(msg.q) || !isValidPacked(msg.d) || !redundant.every(isValidPacked)) {
       this.rejected.malformed++;
       return;
     }
@@ -206,9 +214,15 @@ export class Room {
       return;
     }
     const qd = this.inbuf[seat];
-    qd.push({ q: msg.q, i: unpackInput(msg.d) });
-    while (qd.length > JITTER_BUFFER) qd.shift(); // backlog: latest wins
+    // Fill any gap from the redundant copies (oldest first), then this input.
+    const candidates: [number, unknown][] = [[msg.q - 2, redundant[1]], [msg.q - 1, redundant[0]], [msg.q, msg.d]];
+    for (const [q, d] of candidates) {
+      if (d === undefined || q <= this.latestSeq[seat] || q <= this.appliedSeq[seat]) continue;
+      qd.push({ q, i: unpackInput(d as never) });
+    }
     this.latestSeq[seat] = msg.q;
+    // Backlog beyond the target depth: skip forward (latest wins) instead of adding latency.
+    while (qd.length > this.jitterTarget[seat] + 2) qd.shift();
   }
 
   pong(peer: Peer, sentMs: number, nowMs: number): void {
@@ -218,6 +232,32 @@ export class Room {
     if (!sentMs || rtt < 0 || rtt > 2000) return; // clock nonsense or a stall, not latency
     const half = rtt / 2;
     this.owd[seat] = this.owd[seat] ? this.owd[seat] * 0.7 + half * 0.3 : half;
+  }
+
+  /**
+   * One input per tick from the seat's jitter buffer. Starving (nothing queued)
+   * repeats the last input and deepens the buffer so the next burst of jitter is
+   * absorbed; a calm spell shrinks it again to keep latency low.
+   */
+  private consumeInput(i: number): SimInput {
+    const buf = this.inbuf[i];
+    const tick = this.sim?.tick ?? 0;
+    if (this.refilling[i] && buf.length < this.jitterTarget[i]) return this.latest[i];
+    this.refilling[i] = false;
+    const next = buf.shift();
+    if (next) {
+      this.latest[i] = next.i;
+      this.appliedSeq[i] = next.q;
+      if (tick - this.lastStarve[i] > JITTER_DECAY_TICKS && this.jitterTarget[i] > JITTER_MIN) {
+        this.jitterTarget[i]--;
+        this.lastStarve[i] = tick;
+      }
+    } else if (this.appliedSeq[i] > 0) {
+      this.jitterTarget[i] = Math.min(JITTER_MAX, this.jitterTarget[i] + 1);
+      this.refilling[i] = true;
+      this.lastStarve[i] = tick;
+    }
+    return this.latest[i]; // nothing new this tick: hold the last input
   }
 
   /** Input seq applied to a seat on the last step (acks). */
@@ -253,6 +293,9 @@ export class Room {
     this.latest = Array.from({ length: n }, () => emptyInput());
     this.latestSeq = new Array(n).fill(0);
     this.inbuf = Array.from({ length: n }, () => []);
+    this.jitterTarget = new Array(n).fill(JITTER_MIN);
+    this.refilling = new Array(n).fill(false);
+    this.lastStarve = new Array(n).fill(0);
     this.appliedSeq = new Array(n).fill(0);
     this.owd = new Array(n).fill(0);
     this.lagTicks = new Array(n).fill(0);
@@ -291,12 +334,7 @@ export class Room {
 
     const inputs = this.seats.map((s, i) => {
       if (s.peer) {
-        const next = this.inbuf[i].shift();
-        if (next) {
-          this.latest[i] = next.i;
-          this.appliedSeq[i] = next.q;
-        }
-        return this.latest[i]; // nothing new this tick: hold the last input
+        return this.consumeInput(i);
       }
       return this.brains[i]?.think() ?? emptyInput();
     });
@@ -321,7 +359,7 @@ export class Room {
 
   private end(): void {
     const sim = this.sim!;
-    this.sendSnapshots(); // final state
+    this.sendSnapshots(true); // final state, reliable: Results must agree with the server
     this.state = "ended";
     this.endedAt = Date.now();
     const replay = this.recorder!.finish();
@@ -338,7 +376,7 @@ export class Room {
   }
 
   /** Interest-managed per-client snapshots. */
-  private sendSnapshots(): void {
+  private sendSnapshots(reliable = false): void {
     const sim = this.sim!;
     const events = this.events.splice(0);
     const m = [sim.match.state === "over" ? 1 : 0, sim.match.timeLeft, sim.match.elapsed, sim.match.teamScores[0], sim.match.teamScores[1], sim.match.winnerTeam, sim.match.winnerId];
@@ -349,7 +387,7 @@ export class Room {
       const ev = events.filter((x) => x[0] === "ki" || x[0] === "me" || x[1] === seat || vis.has(x[1]) || (x[2] >= 0 && vis.has(x[2]) && x[0] !== "rv"));
       const team = viewer.team;
       const k = sim.markers.filter((mk) => sim.entities[mk.owner]?.team === team).map((mk) => [mk.owner, mk.pos.x, mk.pos.y, mk.pos.z, mk.vel.x, mk.vel.y, mk.vel.z, mk.life]);
-      const msg: SnapMsg = { t: sim.tick, ack: seat >= 0 ? this.appliedSeq[seat] : 0, m, e, ev, lat: Math.round(lat), k };
+      const msg: SnapMsg = { t: sim.tick, ack: seat >= 0 ? this.appliedSeq[seat] : 0, m, e, ev, lat: Math.round(lat), rw: seat >= 0 ? this.lagTicks[seat] ?? 0 : 0, k };
       return msg;
     };
     this.seats.forEach((s, i) => {
@@ -358,9 +396,9 @@ export class Room {
       const spec = this.peerSpec.get(s.peer);
       // An eliminated player spectates whoever they follow.
       const viewer = self.eliminated && spec ? this.specViewer(spec) : viewerFor(sim, i);
-      s.peer.send("snap", snapFor(viewer, i, this.owd[i]), false);
+      s.peer.send("snap", snapFor(viewer, i, this.owd[i]), reliable);
     });
-    for (const [p, spec] of this.spectators) p.send("snap", snapFor(this.specViewer(spec), -1, 0), false);
+    for (const [p, spec] of this.spectators) p.send("snap", snapFor(this.specViewer(spec), -1, 0), reliable);
   }
 
   private specViewer(spec: SpecMsg): Viewer {

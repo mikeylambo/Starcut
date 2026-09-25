@@ -1,5 +1,6 @@
 import geckos, { type ClientChannel } from "@geckos.io/client";
 import { PredictionClient } from "./PredictionClient";
+import { clientLink, profileFromQuery } from "./LinkConditioner";
 import {
   DEFAULT_PORT, PROTOCOL_VERSION,
   type BeginMsg, type EndMsg, type HelloMsg, type LobbyMsg, type SnapMsg, type SpecMsg, type WelcomeMsg
@@ -12,7 +13,7 @@ import type { SimEvents } from "../sim/Simulation";
  *  - geckos.io WebRTC data channel; inputs every sim tick, unreliable latest-wins;
  *  - authoritative snapshots ~20 Hz feed a PredictionClient (prediction,
  *    reconciliation, ~110 ms remote interpolation);
- *  - `?fakelag=120&jitter=40&loss=5` test harness, both directions;
+ *  - a LinkConditioner on both legs (F2 presets, `?lag=100&jitter=15&loss=1`);
  *  - connection DIAGNOSIS: "CONNECTING…" forever is the worst failure a tester
  *    can see. geckos signals over HTTP, then opens a data channel over UDP;
  *    those legs fail for different reasons (host down vs UDP ports closed), so
@@ -41,26 +42,25 @@ export class NetClient {
   private startedAt = 0;
   private handshook = false;
   private timedOut = false;
-  private lagMs = 0;
-  private jitterMs = 0;
-  private lossPct = 0;
+  /** Both legs pass through the shared client conditioner (F2 presets, ?lag=). */
+  private readonly link = clientLink;
 
   constructor(readonly url: string, readonly port: number) {}
 
-  private viaLag(fn: () => void): void {
-    if (this.lossPct > 0 && Math.random() * 100 < this.lossPct) return;
-    if (this.lagMs <= 0) { fn(); return; }
-    setTimeout(fn, Math.max(0, this.lagMs + (Math.random() * 2 - 1) * this.jitterMs));
+  private emit(event: string, data: unknown, reliable = false): void {
+    this.link.pass(() => this.channel?.emit(event, data as never, reliable ? { reliable: true } : undefined), reliable);
+  }
+
+  private on(channel: ClientChannel, event: string, reliable: boolean, fn: (raw: unknown) => void): void {
+    channel.on(event, (raw) => this.link.pass(() => fn(raw), reliable));
   }
 
   connect(hello: Omit<HelloMsg, "v">): void {
-    const params = new URLSearchParams(location.search);
-    this.lagMs = Number(params.get("fakelag") ?? 0);
-    this.jitterMs = Number(params.get("jitter") ?? 0);
-    this.lossPct = Number(params.get("loss") ?? 0);
+    const fromUrl = profileFromQuery(location.search);
+    if (fromUrl) this.link.set(fromUrl);
     this.status = "connecting";
     this.startedAt = performance.now();
-    const channel = geckos({ url: this.url, port: this.port });
+    const channel = geckos({ url: this.url, port: this.port, iceServers: clientIceServers() });
     this.channel = channel;
 
     channel.onConnect((err) => {
@@ -70,9 +70,9 @@ export class NetClient {
         this.error = String(err.message ?? err);
         return;
       }
-      channel.emit("hello", { ...hello, v: PROTOCOL_VERSION }, { reliable: true });
+      this.emit("hello", { ...hello, v: PROTOCOL_VERSION }, true);
     });
-    channel.on("welcome", (raw) => {
+    this.on(channel, "welcome", true, (raw) => {
       const d = raw as WelcomeMsg;
       if (d.v !== PROTOCOL_VERSION) {
         this.status = "error";
@@ -87,27 +87,23 @@ export class NetClient {
       this.joinedLive = d.live;
       this.status = "lobby";
     });
-    channel.on("host", (raw) => { this.host = !!(raw as { host: boolean }).host; });
-    channel.on("lobby", (raw) => { this.lobby = raw as LobbyMsg; });
-    channel.on("refused", (raw) => {
+    this.on(channel, "host", true, (raw) => { this.host = !!(raw as { host: boolean }).host; });
+    this.on(channel, "lobby", true, (raw) => { this.lobby = raw as LobbyMsg; });
+    this.on(channel, "refused", true, (raw) => {
       this.status = "error";
       this.error = String((raw as { reason?: string }).reason ?? "REFUSED");
     });
-    channel.on("begin", (raw) => {
+    this.on(channel, "begin", true, (raw) => {
       const d = raw as BeginMsg;
       this.begin = d;
       this.pc = new PredictionClient(d.config, this.seat);
       this.status = "playing";
       this.onBegin?.();
     });
-    channel.on("snap", (raw) => {
-      this.viaLag(() => this.pc?.onSnapshot(raw as SnapMsg, performance.now()));
-    });
-    channel.on("ping", (raw) => {
-      const t = (raw as { t: number }).t;
-      this.viaLag(() => this.viaLag(() => this.channel?.emit("pong", { t })));
-    });
-    channel.on("end", (raw) => {
+    this.on(channel, "snap", false, (raw) => this.pc?.onSnapshot(raw as SnapMsg, performance.now()));
+    // RTT probe: both legs go through the conditioner so the server measures the latency we feel.
+    this.on(channel, "ping", false, (raw) => this.emit("pong", { t: (raw as { t: number }).t }));
+    this.on(channel, "end", true, (raw) => {
       this.end = raw as EndMsg;
       this.status = "ended";
       this.onEnd?.(this.end);
@@ -143,19 +139,19 @@ export class NetClient {
   sendInput(i: SimInput, ev: SimEvents): void {
     const msg = this.pc?.predict(i, ev);
     if (!msg) return;
-    this.viaLag(() => this.channel?.emit("i", msg));
+    this.emit("i", msg);
   }
 
   sendSpec(spec: SpecMsg): void {
-    this.channel?.emit("spec", spec);
+    this.emit("spec", spec);
   }
 
   requestStart(): void {
-    this.channel?.emit("start", {}, { reliable: true });
+    this.emit("start", {}, true);
   }
 
   pick(archetype: Archetype): void {
-    this.channel?.emit("pick", { archetype }, { reliable: true });
+    this.emit("pick", { archetype }, true);
   }
 
   close(): void {
@@ -186,4 +182,17 @@ export function serverLocation(): { url: string; port: number; http: string } {
   }
   const proto = loc.protocol === "https:" ? "https:" : "http:";
   return { url: `${proto}//${host}`, port, http: `${proto}//${host}:${port}` };
+}
+
+/**
+ * ICE servers for the client's WebRTC leg. `VITE_STUN_URLS` (comma-separated)
+ * at build time; a TURN slot is read from `VITE_TURN_URL` / `VITE_TURN_USER` /
+ * `VITE_TURN_PASS` when a TURN relay is added later.
+ */
+export function clientIceServers(): RTCIceServer[] {
+  const env = import.meta.env;
+  const stun = String(env.VITE_STUN_URLS ?? "stun:stun.l.google.com:19302").split(",").map((s) => s.trim()).filter(Boolean);
+  const servers: RTCIceServer[] = stun.length ? [{ urls: stun }] : [];
+  if (env.VITE_TURN_URL) servers.push({ urls: String(env.VITE_TURN_URL), username: String(env.VITE_TURN_USER ?? ""), credential: String(env.VITE_TURN_PASS ?? "") });
+  return servers;
 }

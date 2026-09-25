@@ -36,6 +36,8 @@ export interface HelloMsg {
 export interface InputMsg {
   q: number;
   d: PackedInput;
+  /** Redundancy: the inputs for q-1 and q-2, so a lost packet is filled by the next one. */
+  r?: PackedInput[];
 }
 
 /** Spectator camera: follow an entity (id >= 0) or free cam at a point. */
@@ -91,6 +93,8 @@ export interface SnapMsg {
   ev: NetEvent[];
   /** This client's measured one-way latency (ms). */
   lat: number;
+  /** Melee rewind currently applied to this client's strikes (ticks). */
+  rw?: number;
   /** Ghost markers in flight (own team's only). */
   k: number[][];
 }

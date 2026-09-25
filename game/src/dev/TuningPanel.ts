@@ -1,5 +1,6 @@
 import tuningSource from "../config/tuning.ts?raw";
 import { DEFAULT_TUNING, TUNING, applyTuning, snapshotTuning } from "../config/tuning";
+import { LINK_PRESETS, clientLink, profileFromQuery } from "../net/LinkConditioner";
 
 /**
  * `?dev=1` live tuning. Every value in tuning.ts, grouped, editable while you
@@ -58,7 +59,7 @@ export class TuningPanel {
     this.lockNote.textContent = "ONLINE: server tuning is authoritative. Edits apply again in the Practice Range.";
     this.body = document.createElement("div");
     this.body.style.cssText = "overflow:auto;padding:6px 10px 12px;flex:1;";
-    this.root.append(head, this.lockNote, this.body);
+    this.root.append(head, this.lockNote, this.buildNetwork(), this.body);
     this.build();
     document.body.appendChild(this.root);
     window.addEventListener("keydown", (e) => {
@@ -67,6 +68,38 @@ export class TuningPanel {
         this.toggle();
       }
     });
+  }
+
+  /** Lag-harness presets: condition both legs of the client's geckos channel. */
+  private buildNetwork(): HTMLDivElement {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "padding:6px 10px;border-bottom:1px solid #4ddcff22;";
+    wrap.innerHTML = "<div style='color:#4ddcff;letter-spacing:.15em;margin-bottom:4px'>NETWORK (lag harness)</div>";
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;";
+    const note = document.createElement("div");
+    note.style.cssText = "opacity:.6;margin-top:4px;";
+    const fromUrl = profileFromQuery(location.search);
+    if (fromUrl) clientLink.set(fromUrl);
+    const buttons: HTMLButtonElement[] = [];
+    const refresh = () => {
+      const p = clientLink.profile;
+      const match = LINK_PRESETS.find((x) => JSON.stringify(x.profile) === JSON.stringify(p));
+      buttons.forEach((b) => { b.style.borderColor = b.dataset.id === match?.id ? "#ffcf7a" : "#315266"; });
+      note.textContent = `+${p.rttMs} ms RTT ±${p.jitterMs} · loss ${p.lossPct}% · dup ${p.dupPct}% · reorder ${p.reorderPct}%  (both legs, online)`;
+    };
+    for (const preset of LINK_PRESETS) {
+      const b = document.createElement("button");
+      b.textContent = preset.label;
+      b.dataset.id = preset.id;
+      b.style.cssText = "font:inherit;background:#0c1c28;color:#bfe8ff;border:1px solid #315266;border-radius:5px;padding:3px 6px;cursor:pointer;";
+      b.addEventListener("click", () => { clientLink.set(preset.profile); refresh(); });
+      buttons.push(b);
+      row.appendChild(b);
+    }
+    wrap.append(row, note);
+    refresh();
+    return wrap;
   }
 
   private build(): void {

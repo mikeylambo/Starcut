@@ -22,6 +22,8 @@ import { ARCHETYPE_INFO, emptyInput, type Archetype, type SimInput } from "../si
 import type { ReplayData } from "../sim/Replay";
 import type { Entity } from "../sim/Entity";
 import type { TuningPanel } from "../dev/TuningPanel";
+import { clientLink, LINK_PRESETS } from "../net/LinkConditioner";
+import { TICK } from "../sim/types";
 
 const DEV = new URLSearchParams(location.search).get("dev") === "1";
 
@@ -95,6 +97,9 @@ export class StarcutRuntime {
   private move = { x: 0, z: 0 };
   private frameSnap: InputSnapshot | null = null;
 
+  /** Dev overlay: flash when a parry resolved via the grace window. */
+  private graceFlash = 0;
+
   // Spectator / replay camera
   private freeCam = false;
   private camPos = new THREE.Vector3(0, 6, 8);
@@ -152,6 +157,7 @@ export class StarcutRuntime {
     this.hud.root.style.display = "none";
     this.overlay = new Overlay(opts.hudParent);
     this.present = new Presentation(this.scene, this.visuals, this.hud, opts.audio, quality === "high");
+    this.present.onGraceParry = () => { this.graceFlash = 1.2; };
 
     const touchRoot = document.createElement("div");
     opts.hudParent.appendChild(touchRoot);
@@ -583,6 +589,8 @@ export class StarcutRuntime {
       this.hud.setObjective(this.objectiveFor(s));
       this.hud.setStatus("");
       this.hud.setCenter("");
+      this.hud.setNet(DEV && this.graceFlash > 0 ? "◆ GRACE PARRY" : "");
+      this.graceFlash = Math.max(0, this.graceFlash - dt);
     } else if (s instanceof NetSession && !s.live) {
       this.hud.setObjective("");
       this.hud.setStatus("");
@@ -609,7 +617,15 @@ export class StarcutRuntime {
       this.hud.setCenter(center);
       if (s instanceof NetSession) {
         const pc = s.net.pc;
-        this.hud.setNet(pc ? `ROOM ${s.net.room} · ${Math.round(pc.owdMs * 2)} ms rtt · ${s.net.seat >= 0 ? `seat ${s.net.seat}` : "spectator"}${DEV ? ` · pending ${pc.pendingCount}` : ""}` : "");
+        let line = pc ? `ROOM ${s.net.room} · ${Math.round(pc.owdMs * 2)} ms rtt · ${s.net.seat >= 0 ? `seat ${s.net.seat}` : "spectator"}` : "";
+        if (pc && DEV) {
+          const link = LINK_PRESETS.find((x) => JSON.stringify(x.profile) === JSON.stringify(clientLink.profile));
+          line += `\nrewind ${Math.round(pc.rewindTicks * TICK * 1000)} ms · corrections ${pc.correctionRate(performance.now()).toFixed(1)}/s (max ${pc.maxCorrection.toFixed(2)} m)` +
+            `\npending ${pc.pendingCount} · link ${link ? link.label : clientLink.active ? "custom" : "off"}` +
+            (this.graceFlash > 0 ? "\n◆ GRACE PARRY" : "");
+        }
+        this.hud.setNet(line);
+        this.graceFlash = Math.max(0, this.graceFlash - dt);
       } else this.hud.setNet("");
     }
 

@@ -9,6 +9,7 @@ import { ReplayPlayer, type ReplayData } from "../src/sim/Replay";
 import { SNAP_IDX } from "../src/sim/Entity";
 import { MATCH, NET } from "../src/config/tuning";
 import { Rng } from "../src/core/Rng";
+import { LinkConditioner } from "../src/net/LinkConditioner";
 import { emptyInput, packInput, type Archetype, type SimInput } from "../src/sim/types";
 import { duelConfig, hold, place } from "./helpers";
 
@@ -301,4 +302,26 @@ test("Shroud is server-side: a distant viewer's snapshot never contains a Shroud
     assert.ok(!s.e.some((e) => e[SNAP_IDX.id] === 1), "shrouded ghost withheld");
     assert.ok(!s.ev.some((e) => (e[1] === 1 || e[2] === 1) && e[0] !== "ki"), "and its events");
   }
+});
+
+test("LinkConditioner: reliable is delayed but ordered and never dropped; unreliable drops/duplicates at the configured rates", () => {
+  let now = 0;
+  const q: { at: number; fn: () => void }[] = [];
+  const rng = new Rng(9);
+  const link = new LinkConditioner((fn, ms) => q.push({ at: now + ms, fn }), () => rng.next(), () => now);
+  link.set({ rttMs: 100, jitterMs: 30, lossPct: 10, dupPct: 5, reorderPct: 5 });
+  const got: number[] = [];
+  for (let i = 0; i < 200; i++) link.pass(() => got.push(i), true);
+  now = 1000;
+  q.sort((a, b) => a.at - b.at).forEach((x) => x.fn());
+  assert.deepEqual(got, Array.from({ length: 200 }, (_, i) => i), "reliable: all delivered in order");
+  q.length = 0;
+  const un: number[] = [];
+  for (let i = 0; i < 2000; i++) link.pass(() => un.push(i), false);
+  q.forEach((x) => x.fn());
+  const dropped = link.stats.dropped, dup = link.stats.duplicated;
+  assert.ok(dropped > 120 && dropped < 290, `~10% dropped (${dropped})`);
+  assert.ok(dup > 50 && dup < 160, `~5% duplicated (${dup})`);
+  assert.equal(un.length, 2000 - dropped + dup);
+  assert.ok(q.every((x) => x.at >= 0 && x.at <= now + 50 + 30 + 60 + 20), "delays bounded by rtt/2 + jitter + reorder hold");
 });

@@ -19,6 +19,9 @@ import type { InputMsg, NetEvent, SnapMsg } from "./Protocol";
  *    between the two snapshots that bracket that moment (no extrapolation).
  */
 
+/** A reconcile that moves my own body more than this counts as a visible correction (m). */
+export const CORRECTION_M = 0.1;
+
 export interface RemotePose {
   x: number; y: number; z: number;
   yaw: number; pitch: number;
@@ -38,6 +41,13 @@ export class PredictionClient {
   private eventQueue: NetEvent[] = [];
   lastSnapAt = 0;
   owdMs = 0;
+  /** Melee rewind the server applies to my strikes (ticks). */
+  rewindTicks = 0;
+  /** Reconciles whose correction exceeded CORRECTION_M (dev overlay, soak test). */
+  corrections = 0;
+  /** Largest correction seen (m). */
+  maxCorrection = 0;
+  private correctionTimes: number[] = [];
   /** Largest own-position correction applied by the last reconcile (m) — smoothing + diagnostics. */
   lastCorrection = 0;
   private lastInput: SimInput = emptyInput();
@@ -62,7 +72,11 @@ export class PredictionClient {
     if (this.pending.length > 240) this.pending.shift(); // ~4 s safety cap
     this.sim.step(this.inputsWith(i), ev);
     this.onStepped?.(this.seq);
-    return { q: this.seq, d: packInput(i) };
+    const n = this.pending.length;
+    const r = [n >= 2 ? this.pending[n - 2] : null, n >= 3 ? this.pending[n - 3] : null]
+      .filter((x): x is { q: number; i: SimInput } => !!x && x.q >= this.seq - 2)
+      .map((x) => packInput(x.i));
+    return { q: this.seq, d: packInput(i), r };
   }
 
   private inputsWith(i: SimInput): SimInput[] {
@@ -77,6 +91,7 @@ export class PredictionClient {
     this.applied = false;
     this.lastSnapAt = nowMs;
     this.owdMs = msg.lat;
+    this.rewindTicks = msg.rw ?? 0;
     if (msg.ev.length) this.eventQueue.push(...msg.ev);
     const ents = new Map<number, EntitySnap>();
     for (const e of msg.e) ents.set(e[SNAP_IDX.id] as number, e);
@@ -100,6 +115,7 @@ export class PredictionClient {
     const sim = this.sim;
     const me = this.seat >= 0 ? sim.entities[this.seat] : null;
     const before = me ? me.feet.clone() : null;
+    const wasAlive = !!me?.alive;
 
     sim.applyMatchState(snap.m);
     this.visible = new Set();
@@ -117,9 +133,22 @@ export class PredictionClient {
         sim.step(this.inputsWith(p.i), NOOP_EVENTS);
         this.onStepped?.(p.q);
       }
-      if (before) this.lastCorrection = before.distanceTo(me.feet);
+      if (before && me.alive && wasAlive) { // deaths/respawns are teleports, not corrections
+        this.lastCorrection = before.distanceTo(me.feet);
+        if (this.lastCorrection > CORRECTION_M) {
+          this.corrections++;
+          this.maxCorrection = Math.max(this.maxCorrection, this.lastCorrection);
+          this.correctionTimes.push(this.lastSnapAt);
+        }
+      }
     }
     return true;
+  }
+
+  /** Corrections per second over the last few seconds (dev overlay). */
+  correctionRate(nowMs: number, windowMs = 3000): number {
+    this.correctionTimes = this.correctionTimes.filter((t) => nowMs - t <= windowMs);
+    return this.correctionTimes.length / (windowMs / 1000);
   }
 
   /** The last input sent (spectator/death screens hold it). */
