@@ -1,4 +1,5 @@
 import type { PointerLook } from "@slu/web-shell";
+import { emptyHeld, padEdges, readPad, type InputDevice, type PadHeld, type PadLike } from "./GamepadMap";
 
 /**
  * One semantic input layer for gameplay.
@@ -25,6 +26,10 @@ export interface InputSnapshot {
   descend: boolean;
   /** Held: show the scoreboard. */
   scoreboard: boolean;
+  /** Replay controls from a pad (edges): speed down/up, pause toggle. */
+  padSpeedDown: boolean;
+  padSpeedUp: boolean;
+  padReplayPause: boolean;
   anyMove: boolean;
 }
 
@@ -61,7 +66,11 @@ export class GameplayInput {
   private abilityLatched = false;
 
   // previous frame's held state for gamepad edge detection
-  private prevPad = { jump: false, lunge: false, parry: false, ability: false };
+  private prevPad: PadHeld = emptyHeld();
+  /** Last device the player touched (drives on-screen button prompts). */
+  device: InputDevice = "kbm";
+  /** Pad source (injectable for tests). */
+  padSource: () => readonly (PadLike | null)[] = () => (navigator.getGamepads?.() ?? []) as readonly (PadLike | null)[];
 
   // touch state
   private moveStick: TouchStick | null = null;
@@ -86,6 +95,7 @@ export class GameplayInput {
 
   attach(): void {
     const kd = (e: KeyboardEvent) => {
+      this.device = "kbm";
       if (!this.active) return;
       this.keys.add(e.code);
       if (KEYS.jump.includes(e.code)) { this.jumpLatched = true; e.preventDefault(); }
@@ -96,6 +106,7 @@ export class GameplayInput {
     };
     const ku = (e: KeyboardEvent) => this.keys.delete(e.code);
     const md = (e: MouseEvent) => {
+      this.device = "kbm";
       if (!this.active) return;
       this.mouseButtons.add(e.button);
       if (e.button === 0) this.lungeLatched = true;
@@ -134,6 +145,23 @@ export class GameplayInput {
     this.touchRoot.style.display = active && this.hasTouch ? "block" : "none";
   }
 
+  /**
+   * While not in play (engage prompt, menus): watch the pads so prompts switch
+   * the moment a pad is touched, and report an A press (engage with the pad).
+   */
+  pollIdle(): { aPressed: boolean } {
+    const held = emptyHeld();
+    for (const pad of this.padSource()) {
+      if (!pad) continue;
+      const r = readPad(pad);
+      if (r.active) this.device = "pad";
+      held.jump = held.jump || r.held.jump;
+    }
+    const aPressed = held.jump && !this.prevPad.jump;
+    this.prevPad = { ...this.prevPad, jump: held.jump };
+    return { aPressed };
+  }
+
   /** Compute the frame snapshot. Call once per gameplay tick. */
   sample(dt: number): InputSnapshot {
     let moveX = 0;
@@ -164,30 +192,25 @@ export class GameplayInput {
       moveZ += clamp(-this.moveStick.y / 46, -1, 1);
     }
 
-    // Gamepad
-    let padJump = false;
-    let padLunge = false;
-    let padParry = false;
-    let padAbility = false;
-    let padDescend = false;
-    const pads = navigator.getGamepads?.() ?? [];
-    for (const pad of pads) {
+    // Gamepad (pure mapping in GamepadMap.ts)
+    const held = emptyHeld();
+    for (const pad of this.padSource()) {
       if (!pad) continue;
-      moveX += deadzone(pad.axes[0] ?? 0);
-      moveZ += -deadzone(pad.axes[1] ?? 0);
-      lookYaw += -deadzone(pad.axes[2] ?? 0) * this.padLookSpeed * dt;
-      lookPitch += -deadzone(pad.axes[3] ?? 0) * this.padLookSpeed * dt;
-      padJump = padJump || !!pad.buttons[0]?.pressed;
-      padLunge = padLunge || !!pad.buttons[7]?.pressed || !!pad.buttons[2]?.pressed;
-      padParry = padParry || !!pad.buttons[5]?.pressed || !!pad.buttons[1]?.pressed;
-      padAbility = padAbility || !!pad.buttons[4]?.pressed || !!pad.buttons[3]?.pressed;
-      padDescend = padDescend || !!pad.buttons[6]?.pressed;
+      const r = readPad(pad);
+      if (r.active) this.device = "pad";
+      moveX += r.moveX;
+      moveZ += r.moveZ;
+      lookYaw += -r.lookX * this.padLookSpeed * dt;
+      lookPitch += -r.lookY * this.padLookSpeed * dt;
+      for (const k of Object.keys(held) as (keyof PadHeld)[]) held[k] = held[k] || r.held[k];
     }
+    const edge = padEdges(held, this.prevPad);
+    this.prevPad = held;
 
-    const jump = this.jumpLatched || this.touchButtons.jump || (padJump && !this.prevPad.jump);
-    const lunge = this.lungeLatched || this.touchButtons.lunge || (padLunge && !this.prevPad.lunge);
-    const parry = this.parryLatched || this.touchButtons.parry || (padParry && !this.prevPad.parry);
-    const ability = this.abilityLatched || this.touchButtons.ability || (padAbility && !this.prevPad.ability);
+    const jump = this.jumpLatched || this.touchButtons.jump || edge.jump;
+    const lunge = this.lungeLatched || this.touchButtons.lunge || edge.lunge;
+    const parry = this.parryLatched || this.touchButtons.parry || edge.parry;
+    const ability = this.abilityLatched || this.touchButtons.ability || edge.ability;
 
     this.jumpLatched = false;
     this.lungeLatched = false;
@@ -197,7 +220,6 @@ export class GameplayInput {
     this.touchButtons.jump = false;
     this.touchButtons.lunge = false;
     this.touchButtons.parry = false;
-    this.prevPad = { jump: padJump, lunge: padLunge, parry: padParry, ability: padAbility };
 
     moveX = clamp(moveX, -1, 1);
     moveZ = clamp(moveZ, -1, 1);
@@ -211,8 +233,11 @@ export class GameplayInput {
       lunge,
       parry,
       ability,
-      descend: has(this.keys, KEYS.descend) || padDescend,
-      scoreboard: has(this.keys, KEYS.scoreboard),
+      descend: has(this.keys, KEYS.descend) || held.descend,
+      scoreboard: has(this.keys, KEYS.scoreboard) || held.scoreboard,
+      padSpeedDown: edge.speedDown,
+      padSpeedUp: edge.speedUp,
+      padReplayPause: edge.replayPause,
       anyMove: Math.abs(moveX) > 0.05 || Math.abs(moveZ) > 0.05
     };
   }
@@ -233,7 +258,7 @@ export class GameplayInput {
         `font:700 12px/1 system-ui,sans-serif;letter-spacing:.08em;color:#eaf2ff;` +
         `background:radial-gradient(circle at 50% 35%, ${color}55, ${color}22);` +
         `border:1px solid ${color}aa;user-select:none;`;
-      const press = (e: Event) => { e.preventDefault(); this.touchButtons[key] = true; el.style.filter = "brightness(1.6)"; };
+      const press = (e: Event) => { e.preventDefault(); this.device = "touch"; this.touchButtons[key] = true; el.style.filter = "brightness(1.6)"; };
       const release = () => { el.style.filter = ""; };
       el.addEventListener("touchstart", press, { passive: false });
       el.addEventListener("touchend", release);
@@ -310,9 +335,4 @@ function has(set: Set<string>, codes: string[]): boolean {
 }
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
-}
-function deadzone(v: number, dz = 0.16): number {
-  if (Math.abs(v) < dz) return 0;
-  const s = (Math.abs(v) - dz) / (1 - dz);
-  return Math.sign(v) * s;
 }

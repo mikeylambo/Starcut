@@ -14,6 +14,8 @@ import { PLAYER, REFLEX, RUSHER } from "../config/tuning";
 import { archetypeHue } from "../render/EntityView";
 import { Presentation } from "./Presentation";
 import { ChaseCamera } from "./ChaseCamera";
+import { prompts, type InputDevice, type Prompts } from "./GamepadMap";
+import { cycleFollow, spectateCandidates } from "./Spectate";
 import { LocalSession, NetSession, ReplaySession, type Session } from "./Sessions";
 import { serverLocation } from "../net/NetClient";
 import { flowBand, SWING_ACTIVE } from "../sim/Simulation";
@@ -104,6 +106,9 @@ export class StarcutRuntime {
   private freeCam = false;
   private camPos = new THREE.Vector3(0, 6, 8);
   private chase = new ChaseCamera();
+  private device: InputDevice | null = null;
+  private keysP: Prompts = prompts("kbm");
+  private hintDrill: DrillId | null = null;
   private replayClip: { recorder: MediaRecorder; chunks: Blob[] } | null = null;
 
   constructor(private readonly opts: StarcutRuntimeOptions) {
@@ -216,6 +221,7 @@ export class StarcutRuntime {
         }
       }
       this.setSession(s);
+      this.hintDrill = sel.drill;
       this.hud.setHint(this.hintFor(sel.drill, s.sim.entities[0].archetype));
       this.readyToEngage();
       return;
@@ -446,16 +452,20 @@ export class StarcutRuntime {
 
   private spectatorControls(snap: InputSnapshot, dt: number): void {
     const s = this.session!;
-    const players = s.sim.players.filter((p) => s.pose(p.id));
+    const candidates = spectateCandidates(s.sim, (id) => !!s.pose(id));
     if (snap.ability) this.freeCam = !this.freeCam;
-    if ((snap.lunge || snap.parry) && players.length) {
-      const idx = players.findIndex((p) => p.id === this.present.followId);
-      const n = players.length;
-      const next = snap.lunge ? (idx + 1) % n : (idx - 1 + n) % n;
-      this.present.followId = players[next].id;
-      this.freeCam = false;
+    if (s instanceof ReplaySession) {
+      if (snap.padReplayPause) s.paused = !s.paused;
+      if (snap.padSpeedUp) s.speed = Math.min(4, s.speed * 2);
+      if (snap.padSpeedDown) s.speed = Math.max(0.25, s.speed / 2);
     }
-    if (this.present.followId < 0 && players.length && !this.freeCam) this.present.followId = players[0].id;
+    if (snap.lunge || snap.parry) {
+      this.present.followId = cycleFollow(candidates, this.present.followId, snap.lunge ? 1 : -1);
+      this.freeCam = false;
+    } else if (!this.freeCam) {
+      // The followed player died or left: move on to a living one.
+      this.present.followId = cycleFollow(candidates, this.present.followId, 0);
+    }
     if (this.freeCam) {
       const fwd = new THREE.Vector3(Math.sin(this.lookYaw) * Math.cos(this.lookPitch), Math.sin(this.lookPitch), Math.cos(this.lookYaw) * Math.cos(this.lookPitch));
       const right = new THREE.Vector3(Math.cos(this.lookYaw), 0, -Math.sin(this.lookYaw));
@@ -478,6 +488,8 @@ export class StarcutRuntime {
     this.lastTime = now;
     dt = Math.min(dt, 0.1);
 
+    this.updatePrompts();
+    if (!this.playing && this.session && this.hud.engageVisible && this.input.pollIdle().aPressed) this.engage();
     this.sampleFrame(dt);
     const s = this.session;
     if (s) {
@@ -570,7 +582,7 @@ export class StarcutRuntime {
     this.visuals.viewmodel.visible = bodyView && !!me?.alive;
 
     if (me && bodyView) {
-      const m = this.present.meterFor(me);
+      const m = this.present.meterFor(me, this.keysP.skill);
       const band: MeterBand = me.archetype === "rusher" ? flowBand(me.resource) : me.resource >= 0.98 ? "max" : me.resource >= 0.34 ? "mid" : "idle";
       this.hud.setMeter(me.resource, band, this.visuals.glowColor, m.label, m.capstone);
       this.hud.setSkill(`${ARCHETYPE_INFO[me.archetype].name.toUpperCase()} · ${m.skill}`);
@@ -611,7 +623,7 @@ export class StarcutRuntime {
       if (this.spectating) {
         const f = this.freeCam ? null : focus;
         center = `${s instanceof ReplaySession ? "REPLAY" : me?.eliminated ? "ELIMINATED — SPECTATING" : "SPECTATING"}  ${f ? f.name : "FREE CAM"}\n` +
-          `LMB / RMB  cycle   ·   Q  free cam${s instanceof ReplaySession ? "   ·   Space pause   ·   ← →  speed   ·   Esc  exit" : ""}`;
+          `${this.keysP.cycle}  cycle   ·   ${this.keysP.freeCam}  free cam${s instanceof ReplaySession ? `   ·   ${this.keysP.replayPause} pause   ·   ${this.keysP.speed}  speed   ·   ${this.keysP.pause}  exit` : ""}`;
       } else if (me && !me.alive && !me.eliminated) {
         center = `RESPAWN IN ${Math.max(0, me.respawnT).toFixed(1)}`;
       }
@@ -650,17 +662,28 @@ export class StarcutRuntime {
   }
 
   private hintFor(drill: DrillId, archetype: Archetype): string {
+    const k = this.keysP;
     switch (drill) {
       case "lunge-trial": return "Cut every target as fast as you can. Speed feeds Flow feeds reach.";
-      case "parry-trial": return "Right-click the instant a red swing lands. Clean parries open a free cut.";
+      case "parry-trial": return `${k.parry} the instant a red swing lands. Clean parries open a free cut.`;
       case "execute-drill": return "They parry normal lunges. Sprint to max Flow — EXECUTE READY — then cut through.";
-      case "ghost-drill": return "Stay out of their view. Unseen strikes cut through parries. Q throws a marker.";
-      case "reflex-drill": return "Press Q (counter-stance) as a red swing lands — the riposte is automatic.";
+      case "ghost-drill": return `Stay out of their view. Unseen strikes cut through parries. ${k.skill} throws a marker.`;
+      case "reflex-drill": return `Press ${k.skill} (counter-stance) as a red swing lands — the riposte is automatic.`;
       default:
         return archetype === "rusher" ? "Move to build Flow · Cut the blue targets · Parry the red swings · Find the zero-g room"
-          : archetype === "ghost" ? "Build Charge unseen · First strikes cut through parries · Q throws a marker"
-            : "Swing at blade range · Q counter-stance ripostes · Max Tempo chains a cascade";
+          : archetype === "ghost" ? `Build Charge unseen · First strikes cut through parries · ${k.skill} throws a marker`
+            : `Swing at blade range · ${k.skill} counter-stance ripostes · Max Tempo chains a cascade`;
     }
+  }
+
+  /** Button prompts follow the device the player last touched. */
+  private updatePrompts(): void {
+    if (this.input.device === this.device) return;
+    this.device = this.input.device;
+    this.keysP = prompts(this.device);
+    this.hud.setEngagePrompts(this.keysP);
+    const s = this.session;
+    if (s instanceof LocalSession && this.hintDrill) this.hud.setHint(this.hintFor(this.hintDrill, s.sim.entities[0].archetype));
   }
 
   private objectiveFor(s: LocalSession): string {

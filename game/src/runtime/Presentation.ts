@@ -334,16 +334,16 @@ export class Presentation {
 
   // ---- HUD text helpers (presentation of sim numbers) -----------------------------
 
-  meterFor(e: Entity): { label: string; capstone: string; skill: string } {
+  meterFor(e: Entity, skillKey = "Q"): { label: string; capstone: string; skill: string } {
     const label = ARCHETYPE_INFO[e.archetype].resource;
     if (e.archetype === "rusher") {
       return { label, capstone: e.flow.value >= RUSHER.executeThreshold ? "EXECUTE READY" : "", skill: "LUNGE-LOCK" };
     }
     if (e.archetype === "ghost") {
-      const skill = e.markerCd > 0 ? `MARKER ${e.markerCd.toFixed(1)}s` : e.charge >= GHOST.markerCost ? "Q  MARKER READY" : "MARKER — NEED CHARGE";
+      const skill = e.markerCd > 0 ? `MARKER ${e.markerCd.toFixed(1)}s` : e.charge >= GHOST.markerCost ? `${skillKey}  MARKER READY` : "MARKER — NEED CHARGE";
       return { label, capstone: e.shrouded ? "SHROUDED" : e.spotted ? "SPOTTED" : "", skill };
     }
-    const skill = e.stanceCd > 0 ? `COUNTER-STANCE ${e.stanceCd.toFixed(1)}s` : "Q  COUNTER-STANCE READY";
+    const skill = e.stanceCd > 0 ? `COUNTER-STANCE ${e.stanceCd.toFixed(1)}s` : `${skillKey}  COUNTER-STANCE READY`;
     return { label, capstone: e.cascadeLeft > 0 ? `CASCADE ×${e.cascadeLeft}` : e.tempo >= REFLEX.cascadeThreshold ? "CASCADE READY" : "", skill };
   }
 

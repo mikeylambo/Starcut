@@ -25,6 +25,8 @@
     "src/net/PredictionClient.ts",
     "src/net/LinkConditioner.ts",
     "src/runtime/ChaseCamera.ts",
+    "src/runtime/Spectate.ts",
+    "src/runtime/GamepadMap.ts",
     "test/**/*.ts"
   ]
 }

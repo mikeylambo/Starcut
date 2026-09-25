@@ -120,6 +120,18 @@ export class Hud {
     parent.appendChild(this.root);
   }
 
+  /** Rebuild the engage card for the active device's button prompts. */
+  setEngagePrompts(p: { engage: string; move: string; look: string; jump: string; cut: string; parry: string; skill: string; scores: string; pause: string }): void {
+    this.engage.innerHTML =
+      `<div style='display:grid;gap:10px'><div style='font-size:13px;opacity:.7;letter-spacing:.3em'>STARCUT</div><div>${esc(p.engage)}</div>` +
+      `<div style='font-size:12px;opacity:.55;letter-spacing:.05em;line-height:1.7'>${esc(p.move)} move &nbsp;·&nbsp; ${esc(p.look)} look &nbsp;·&nbsp; ${esc(p.jump)} jump<br>` +
+      `${esc(p.cut)} — Cut &nbsp;·&nbsp; ${esc(p.parry)} — Parry &nbsp;·&nbsp; ${esc(p.skill)} — Skill &nbsp;·&nbsp; ${esc(p.scores)} — Scores &nbsp;·&nbsp; ${esc(p.pause)} — Pause</div></div>`;
+  }
+
+  get engageVisible(): boolean {
+    return this.engage.style.display !== "none";
+  }
+
   onEngage(fn: () => void): void {
     this.engage.addEventListener("click", fn);
     this.engage.addEventListener("touchstart", (e) => { e.preventDefault(); fn(); }, { passive: false });
