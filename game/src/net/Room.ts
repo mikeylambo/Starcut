@@ -59,6 +59,8 @@ interface Member extends MemberInfo {
   reservedUntil: number;
   lastInputAt: number;
   clipsSent: number;
+  /** The member's own previous input (activity is judged against this, not the seat — a bot may drive the seat). */
+  lastIn?: SimInput;
 }
 
 interface Seat {
@@ -351,6 +353,7 @@ export class Room {
   private markAway(m: Member): void {
     if (m.away) return;
     m.away = true;
+    console.log(`[room ${this.code}] ${m.name} idle/away — a bot holds seat ${m.seat}`);
     if (this.state === "live" && m.seat >= 0) {
       this.afkTakeovers++;
       this.botTakes(m.seat);
@@ -362,6 +365,7 @@ export class Room {
   private markBack(m: Member): void {
     if (!m.away) return;
     m.away = false;
+    console.log(`[room ${this.code}] ${m.name} is back in seat ${m.seat}`);
     m.lastInputAt = this.now();
     if (this.state === "live" && m.seat >= 0) this.takeSeat(m, m.seat, false);
     m.peer?.send("away", { away: false }, true);
@@ -469,7 +473,9 @@ export class Room {
     while (qd.length > this.jitterTarget[seat] + 2) qd.shift();
     // Real activity (not the neutral input a hidden tab sends) keeps the player "present".
     const last = unpackInput(msg.d as never);
-    if (last.moveX !== 0 || last.moveZ !== 0 || last.attack !== this.latest[seat].attack || last.parry !== this.latest[seat].parry || last.jump !== this.latest[seat].jump) {
+    const prev = m.lastIn;
+    m.lastIn = last;
+    if (last.moveX !== 0 || last.moveZ !== 0 || (prev && (last.attack !== prev.attack || last.parry !== prev.parry || last.jump !== prev.jump || last.ability !== prev.ability))) {
       m.lastInputAt = this.now();
       if (m.away) this.markBack(m);
     }

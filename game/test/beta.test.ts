@@ -294,12 +294,18 @@ test("Away: an idle (hidden-tab) player's seat goes to a bot after the idle limi
   const seat = rig.room.memberOf(p)!.seat;
   let q = 0;
   // Neutral input (what a hidden tab sends): keeps arriving, but isn't activity.
-  rig.advance(BETA.idleLimitSec + 1, () => rig.room.input(p, { q: ++q, d: packInput(emptyInput()) }));
+  // Real clients carry non-zero press counters from earlier play.
+  const neutral = emptyInput();
+  neutral.attack = 6;
+  neutral.jump = 3;
+  rig.advance(BETA.idleLimitSec + 1, () => rig.room.input(p, { q: ++q, d: packInput(neutral) }));
   assert.equal(rig.room.memberOf(p)!.away, true, "marked away");
   assert.ok(rig.room.seats[seat].brain, "bot took the seat");
   assert.deepEqual(p.last("away"), { away: true });
-  const moving = emptyInput();
-  moving.moveZ = 1;
+  // More neutral input after the takeover must not count as coming back.
+  rig.advance(3, () => rig.room.input(p, { q: ++q, d: packInput(neutral) }));
+  assert.equal(rig.room.memberOf(p)!.away, true, "still away while the tab stays hidden");
+  const moving = { ...neutral, moveZ: 1 };
   rig.room.input(p, { q: ++q, d: packInput(moving) });
   assert.equal(rig.room.memberOf(p)!.away, false, "back");
   assert.equal(rig.room.seats[seat].brain, null);
