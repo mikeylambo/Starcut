@@ -23,13 +23,53 @@ that. To play across a LAN, run both commands on one machine and open
 and UDP 20000-20010 (`RTC_PORT_MIN` / `RTC_PORT_MAX`). `http://<host>:9208/health` answers
 over plain HTTP (`/healthz` is the canonical path). If it answers but the game can't
 connect, the UDP ports are blocked. The connect screen reports which of those two cases
-it hit. Deploying: see [DEPLOY.md](DEPLOY.md) (Dockerfile for the authority, Vercel for
-the client, `VITE_AUTHORITY_URL`).
+it hit. Deploying: see [DEPLOY.md](DEPLOY.md) (pm2 on a VPS, Vercel for the client).
 
 ```bash
-npm run verify     # typecheck (client + server) + headless tests + production build
+npm run verify     # typecheck + headless tests + both production builds + bundle check
 npm run build      # -> game/dist (static, deploy anywhere; the server is separate)
 ```
+
+## Closed beta (v0.5)
+
+**Everything content-shaped is data** in `game/data/`: `modes.json` (FFA, TDM, CTF, Faction Clash,
+Elimination and their numbers), `maps/*.json` (geometry, spawns per mode, flags, zone path, shadows,
+nav nodes, landmarks, mood/lights), `playlists.json` (Quick Play weights), `bots.json` (difficulty
+tiers, adaptive tier for new players, offline ramp), `factions.json`, `progression.json` (unlocks +
+challenges), `onboarding.json` (lessons), `tips.json`, `beta.json` (idle limit, reconnect window,
+rematch vote, feedback clip length…), `controls.json`, `graphics.json`, `accessibility.json`.
+`validateContent()` checks them at boot and in the tests.
+
+- **Maps:** Voidglass (hand-built art pass: vista + landmark signage), **Orbital Ring** (Rusher: open
+  ring corridor, raised hub, spin section) and **Derelict Wreck** (Ghost: dark rooms, shadow pockets,
+  vents). Every mode runs on every map.
+- **Modes:** TDM 4v4 · CTF 4v4 (carrier can't cut, skill = dash, dropped flags auto-return) · Faction
+  Clash (3 teams, kills + a moving zone held uncontested) · FFA · Elimination (rounds). Bots backfill,
+  players join in progress, Results → replay.
+- **Matchmaking:** Quick Play (playlist or pick a mode), private rooms (host sets mode/map/bots/skill,
+  room code + `/join/CODE` invite link), parties (the private room is the party; the host queues it
+  into Quick Play), rematch vote, **reconnect within 60 s** (a bot holds the seat), and a hidden tab
+  keeps playing on a worker ticker until the idle limit hands the seat to a bot.
+- **Profiles:** guest-first (device token, server-side profile); optional Supabase sign-in (Discord or
+  email magic link) claims the guest profile. Factions (banner only), war score on the main menu,
+  cosmetic-only progression (blade skins, afterimage colors, kill effects) with a 3D loadout preview.
+- **Onboarding:** notice → title → six Practice Range lessons → an eased first bot match → pledge.
+  All skippable; returning players go straight to the menu.
+- **Settings:** key + gamepad remap, sensitivity, FOV, invert Y, master/music/SFX/UI volume, graphics
+  presets (Low/Typical/High) + toggles, colorblind presets (teams always carry a shape: ▲ ■ ●, ally
+  ring / enemy chevron), reduced flashing, visual cues for important sounds.
+- **Feedback + telemetry:** F8 (or pause → Send Feedback) saves the last 30 s as a replay with a note and
+  tags; large corrections auto-clip; reports attach the match replay. The admin page
+  (`http://<server>:9208/admin`, `ADMIN_PASSWORD`) has the feedback inbox with clip playback, the
+  report queue, and dashboards (kit picks/win rates, matchups, parry/grace/execute rates, RTT, disconnects,
+  kill heatmaps).
+
+**Test aids (dev only):** `STARCUT_MATCH_SECONDS` / `STARCUT_STOCKS` on the server, `?dev=1` →
+`window.__starcut` in the client (incl. `runtime.devPump(sec)` to drive frames when a browser pane is
+hidden). The production server bundle and client build strip them; `npm run verify` fails if they ship.
+
+**Deploy:** one command, no local Docker: `npm run deploy -- staging|production` (pm2 on the VPS,
+staging and production side by side). See [DEPLOY.md](DEPLOY.md).
 
 ## Controls
 
@@ -38,7 +78,7 @@ npm run build      # -> game/dist (static, deploy anywhere; the server is separa
 | Move (always sprinting) | WASD | Left stick | Left-half drag |
 | Look | Mouse (click to lock) | Right stick | Right-half drag |
 | Jump / air-jump | Space | A | JUMP |
-| **Cut** (Rusher/Ghost lunge, Reflex swing) | Left click / E | RT / X | CUT |
+| **Cut** (Rusher/Ghost lunge, Reflex swing) | Left click / E (remappable) | RT / X | CUT |
 | **Parry** | Right click / F / Shift | RB / B | PARRY |
 | **Skill** (Ghost marker, Reflex counter-stance) | Q | LB / Y | SKILL |
 | Scoreboard | Tab (hold) | View (hold) | |
