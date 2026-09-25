@@ -13,6 +13,7 @@ import { newProfile } from "../src/meta/Profile";
 import { applyMatch, completeLessons } from "../src/meta/Progression";
 import { addWar, emptyWar, standing, warPointsFor } from "../src/meta/FactionWar";
 import { presetById } from "../src/net/LinkConditioner";
+import { PredictionClient } from "../src/net/PredictionClient";
 import { emptyInput, packInput, TICK, type SimInput } from "../src/sim/types";
 import { hold } from "./helpers";
 import { runSoak } from "./soakHarness";
@@ -407,5 +408,21 @@ test("Lessons: the Reflex lesson's executor reaches an execute quickly wherever 
       if (!was && sim.entities[1].lunge.isActive && sim.entities[1].lunge.execute) at = t / 60;
     }
     assert.ok(at > 0 && at < 12, `executor executes (player at ${x},${z}): ${at}s`);
+  }
+});
+
+test("Clients see the mode objective state (flags, zone, rounds) from snapshots", () => {
+  for (const mode of ["ctf", "clash", "elim"] as ModeId[]) {
+    const rig = roomRig({ mode, seconds: 60 });
+    const p = new FakePeer("p");
+    rig.room.join(p, rig.info("WATCHER"));
+    rig.room.begin();
+    rig.advance(12);
+    const begin = p.last("begin") as { config: MatchConfig };
+    const snaps = p.msgs.filter((m) => m.event === "snap");
+    const pc = new PredictionClient(begin.config, rig.room.memberOf(p)!.seat);
+    pc.onSnapshot(snaps[snaps.length - 1].data as never, 0);
+    pc.reconcile();
+    assert.deepEqual(pc.sim.rules.getState().map((v) => Math.round(v * 100)), rig.room.sim!.rules.getState().map((v) => Math.round(v * 100)), `${mode}: objective state matches the server`);
   }
 });

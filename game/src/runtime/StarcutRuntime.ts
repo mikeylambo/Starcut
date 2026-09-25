@@ -659,11 +659,14 @@ export class StarcutRuntime {
   devPump(seconds: number): void {
     const n = Math.round(seconds * 60);
     for (let i = 0; i < n && this.booted; i++) this.tickFrame(this.lastTime + 1000 / 60);
+    // Hand the clock back to real time so the next real frame steps normally.
+    this.lastTime = performance.now();
   }
 
   private tickFrame(now: number): void {
-    let dt = (now - this.lastTime) / 1000;
-    this.lastTime = now;
+    // Clamp: never a negative step (a frame stamped before the last one), never a huge one.
+    let dt = Math.max(0, (now - this.lastTime) / 1000);
+    this.lastTime = Math.max(this.lastTime, now);
     dt = Math.min(dt, 0.1);
 
     this.updatePrompts();

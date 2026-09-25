@@ -120,6 +120,7 @@ export class PredictionClient {
     const wasAlive = !!me?.alive;
 
     sim.applyMatchState(snap.m);
+    if (snap.o) sim.rules.setState(snap.o); // flags / zone / round state
     this.visible = new Set();
     for (const es of snap.e) {
       const id = es[SNAP_IDX.id] as number;
