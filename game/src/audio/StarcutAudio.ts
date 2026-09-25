@@ -39,6 +39,10 @@ export type StarcutAudioEvent =
   | "trade"
   | "footstep"
   | "ui.tick"
+  | "ui.hover"
+  | "ui.click"
+  | "ui.back"
+  | "ui.confirm"
   | "parry.execute";
 
 interface Voice {
@@ -109,6 +113,75 @@ export class StarcutAudio implements AudioSystem {
 
   playSfx(id: string): void {
     this.emit(id as StarcutAudioEvent);
+  }
+
+  // ---- menu music: a slow generative pad on the music bus -------------------------
+  private music: { nodes: AudioScheduledSourceNode[]; out: GainNode; timer: ReturnType<typeof setInterval> } | null = null;
+
+  /** Start the menu score (idempotent). Needs a prior user gesture to be audible. */
+  startMusic(): void {
+    if (this.music) return;
+    const ctx = this.ensureContext();
+    const bus = this.busGains.get("music");
+    if (!bus) return;
+    const out = ctx.createGain();
+    out.gain.value = 0.0001;
+    out.gain.exponentialRampToValueAtTime(0.5, ctx.currentTime + 3);
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 900;
+    lp.connect(out);
+    out.connect(bus);
+    const nodes: AudioScheduledSourceNode[] = [];
+    // Drone: two detuned saws an octave apart, slowly breathing through the filter.
+    for (const [f, d] of [[55, -6], [110, 5], [164.8, 0]] as const) {
+      const o = ctx.createOscillator();
+      o.type = "sawtooth";
+      o.frequency.value = f;
+      o.detune.value = d;
+      const g = ctx.createGain();
+      g.gain.value = f > 150 ? 0.05 : 0.09;
+      o.connect(g);
+      g.connect(lp);
+      o.start();
+      nodes.push(o);
+    }
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = 0.05;
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = 500;
+    lfo.connect(lfoGain);
+    lfoGain.connect(lp.frequency);
+    lfo.start();
+    nodes.push(lfo);
+    // Sparse bell arpeggio over the drone (A minor pentatonic).
+    const notes = [440, 523.25, 587.33, 659.25, 783.99, 880];
+    let step = 0;
+    const timer = setInterval(() => {
+      if (!this.ctx || this.ctx.state !== "running") return;
+      if (Math.random() < 0.55) {
+        const n = notes[(step * 3 + Math.floor(Math.random() * 3)) % notes.length];
+        const g = ctx.createGain();
+        g.gain.value = 0.9;
+        g.connect(out);
+        tone(ctx, g, ctx.currentTime, { type: "sine", from: n, dur: 2.4, gain: 0.05, attack: 0.02 });
+        tone(ctx, g, ctx.currentTime, { type: "sine", from: n * 2.01, dur: 1.2, gain: 0.015, attack: 0.02 });
+      }
+      step++;
+    }, 900);
+    this.music = { nodes, out, timer };
+  }
+
+  stopMusic(): void {
+    const m = this.music;
+    if (!m || !this.ctx) return;
+    this.music = null;
+    clearInterval(m.timer);
+    const t = this.ctx.currentTime;
+    m.out.gain.cancelScheduledValues(t);
+    m.out.gain.setValueAtTime(Math.max(0.0001, m.out.gain.value), t);
+    m.out.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
+    for (const n of m.nodes) n.stop(t + 1.3);
   }
 
   /** Semantic entry point used across gameplay. */
@@ -292,6 +365,28 @@ const VOICES: Record<StarcutAudioEvent, Voice> = {
     bus: "sfx",
     build: (ctx, out, now) => {
       noise(ctx, out, now, { dur: 0.05, gain: 0.14, lp: 700 });
+    }
+  },
+  "ui.hover": {
+    bus: "ui",
+    build: (ctx, out, now) => tone(ctx, out, now, { type: "sine", from: 1500, dur: 0.035, gain: 0.025 })
+  },
+  "ui.click": {
+    bus: "ui",
+    build: (ctx, out, now) => {
+      tone(ctx, out, now, { type: "triangle", from: 880, to: 1320, dur: 0.07, gain: 0.07 });
+      noise(ctx, out, now, { dur: 0.03, gain: 0.03, hp: 3000 });
+    }
+  },
+  "ui.back": {
+    bus: "ui",
+    build: (ctx, out, now) => tone(ctx, out, now, { type: "triangle", from: 900, to: 520, dur: 0.08, gain: 0.06 })
+  },
+  "ui.confirm": {
+    bus: "ui",
+    build: (ctx, out, now) => {
+      tone(ctx, out, now, { type: "sine", from: 660, dur: 0.12, gain: 0.07 });
+      tone(ctx, out, now, { type: "sine", from: 990, dur: 0.18, gain: 0.07, delay: 0.07 });
     }
   },
   "ui.tick": {

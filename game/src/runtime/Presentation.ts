@@ -8,6 +8,8 @@ import { ARCHETYPE_INFO } from "../sim/types";
 import type { StarcutAudio, StarcutAudioEvent } from "../audio/StarcutAudio";
 import type { VisualState } from "../fx/VisualState";
 import { esc, type Hud } from "../hud/Hud";
+import { A11Y, SETTINGS, teamColor, teamGlyph, teamName } from "../app/Settings";
+import { afterimageColor, killStyle } from "../render/Cosmetics";
 
 export interface Pose {
   x: number;
@@ -110,6 +112,31 @@ export class Presentation {
   private trailAccum = new Map<number, number>();
   private stepPhase = new Map<number, number>();
 
+  private trailN = 0;
+  private cueT = new Map<string, number>();
+
+  /** Visual cue for an important sound (accessibility): direction relative to the camera. */
+  private cue(key: string, text: string, at: Entity | null, minGap = 0.8): void {
+    if (!SETTINGS.data.audioCues) return;
+    const now = this.time;
+    if ((this.cueT.get(key) ?? -99) > now - minGap) return;
+    const f = this.focus;
+    let angle: number | null = null;
+    if (at && f) {
+      const p = this.posOf(at);
+      const d = Math.hypot(p.x - f.center.x, p.z - f.center.z);
+      if (d > A11Y.audioCueRange) return;
+      const yaw = this.src?.pose(f.id)?.yaw ?? f.yaw;
+      angle = Math.atan2(p.x - f.center.x, p.z - f.center.z) - yaw;
+    }
+    this.cueT.set(key, now);
+    this.hud.pushCue(text, angle);
+  }
+
+  private cosmeticsOf(e: Entity) {
+    return this.src?.sim.config.seats[e.id]?.cosmetics;
+  }
+
   private spawnTrail(pos: THREE.Vector3, yaw: number, color: THREE.Color): void {
     const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false });
     const mesh = new THREE.Mesh(this.trailGeo, mat);
@@ -158,6 +185,7 @@ export class Presentation {
         this.scene.add(view.group);
       }
       view.setArchetype(e.archetype);
+      view.cosmetics = this.cosmeticsOf(e);
       const pose = src.pose(e.id);
       // First person: never draw my own body (the viewmodel is the blade).
       const hidden = !pose || (me && e.id === me.id) || (!me && this.focus?.id === e.id && this.firstPersonFollow);
@@ -187,7 +215,7 @@ export class Presentation {
           let acc = (this.trailAccum.get(e.id) ?? 0) + dt;
           while (acc >= FX.ghostTrailInterval) {
             acc -= FX.ghostTrailInterval;
-            this.spawnTrail(view.group.position, st.yaw, view.color);
+            this.spawnTrail(view.group.position, st.yaw, afterimageColor(this.cosmeticsOf(e), e.archetype, this.trailN++));
           }
           this.trailAccum.set(e.id, acc);
         } else this.trailAccum.set(e.id, 0);
@@ -195,7 +223,10 @@ export class Presentation {
         const speed = e.horizontalSpeed;
         if (e.grounded && speed > 3) {
           const ph = (this.stepPhase.get(e.id) ?? 0) + dt * (1.2 + speed * 0.2);
-          if (ph >= 1) this.audio.emit("footstep", this.volumeAt(e) * (e.archetype === "ghost" ? 0.06 : 0.8));
+          if (ph >= 1) {
+            this.audio.emit("footstep", this.volumeAt(e) * (e.archetype === "ghost" ? 0.06 : 0.8));
+            if (e.archetype !== "ghost" && enemy && !this.isFocus(e)) this.cue(`fs${e.id}`, "FOOTSTEPS", e, 2.5);
+          }
           this.stepPhase.set(e.id, ph % 1);
         }
       }
@@ -230,7 +261,10 @@ export class Presentation {
         if (this.isFocus(e)) {
           this.sound(e.lunge.execute ? "execute" : "lunge.commit", undefined, k);
           this.visuals.onLungeKick(k);
-        } else this.sound("enemy.lunge", e, k);
+        } else {
+          this.sound("enemy.lunge", e, k);
+          if (this.isEnemyOfFocus(e)) this.cue(`ls${e.id}`, e.lunge.execute ? "EXECUTE INCOMING" : "LUNGE", e, 0.3);
+        }
       },
       lungeWhiff: (e) => { if (this.isFocus(e)) this.sound("lunge.whiff"); },
       swingStart: (e) => this.sound("swing", e),
@@ -261,7 +295,7 @@ export class Presentation {
           this.visuals.onParry(at, false, info.heavy);
           this.visuals.onHit();
           this.hud.showBanner(info.heavy ? "EXECUTE PARRIED" : "PARRIED", "#ff5a3c");
-          this.shake = 0.5;
+          this.shake = 0.5 * SETTINGS.shakeScale;
         } else {
           this.visuals.onParry(at, false, info.heavy);
           this.sound(info.heavy ? "parry.execute" : "parry.success", d);
@@ -272,13 +306,16 @@ export class Presentation {
         this.sound("hit.taken");
         this.hud.showBanner("HIT", "#ff5a3c");
         this.visuals.onHit();
-        this.shake = 0.7;
+        this.shake = 0.7 * SETTINGS.shakeScale;
       },
       trade: (w, l) => {
         this.hud.pushFeed(`<span style="color:#ffd27a">TRADE</span> ${esc(w.name)} beat ${esc(l.name)}`);
         if (this.isFocus(w) || this.isFocus(l)) this.sound("trade");
       },
-      botWindup: (b) => this.sound("bot.windup", b),
+      botWindup: (b) => {
+        this.sound("bot.windup", b);
+        this.cue(`bw${b.id}`, "WINDUP", b, 0.5);
+      },
       botStrike: (b) => this.sound("bot.strike", b),
       respawn: (e) => {
         if (!e.isPlayer) this.sound("dummy.spawn", e);
@@ -304,13 +341,86 @@ export class Presentation {
           if (on) this.hud.showBanner("SHROUDED", "#b98cff");
         }
       },
-      matchEnd: () => {}
+      matchEnd: () => {},
+      strikeLanded: (a, t) => this.onStrikeLanded(a, t),
+      flagTaken: (e, team) => {
+        this.hud.pushFeed(`${this.nameTag(e)} took the ${this.teamTag(team)} flag`);
+        this.sound("reveal");
+        this.cue("flag", `${teamName(team)} FLAG TAKEN`, e, 0);
+        const f = this.focus;
+        if (f && e.id === f.id) this.hud.showBanner("FLAG TAKEN — RUN HOME", teamColor(team));
+        else if (f && f.team === team) this.hud.showBanner("YOUR FLAG IS TAKEN", teamColor(team));
+      },
+      flagDropped: (team) => {
+        this.hud.pushFeed(`${this.teamTag(team)} flag dropped`);
+        this.cue("flag", `${teamName(team)} FLAG DROPPED`, null, 0);
+      },
+      flagReturned: (team, by) => {
+        this.hud.pushFeed(by ? `${this.nameTag(by)} returned the ${this.teamTag(team)} flag` : `${this.teamTag(team)} flag returned`);
+        this.sound("respawn");
+        this.cue("flag", `${teamName(team)} FLAG RETURNED`, null, 0);
+      },
+      flagCaptured: (e, team) => {
+        this.hud.pushFeed(`${this.nameTag(e)} <b>captured</b> the ${this.teamTag(team)} flag`);
+        this.sound("cascade");
+        this.cue("flag", "FLAG CAPTURED", null, 0);
+        this.hud.showBanner(`${teamGlyph(e.team)} ${teamName(e.team)} CAPTURES`, teamColor(e.team));
+      },
+      zoneMoved: () => {
+        this.hud.showBanner("ZONE MOVED", "#ffffff");
+        this.sound("reveal");
+        this.cue("zone", "ZONE MOVED", null, 0);
+      },
+      roundStart: (round) => {
+        this.hud.showBanner(`ROUND ${round}`, "#ffffff");
+        this.sound("respawn");
+        this.cue("round", `ROUND ${round}`, null, 0);
+      },
+      roundEnd: (winner, round) => {
+        this.hud.showBanner(winner >= 0 ? `${teamGlyph(winner)} ${teamName(winner)} TAKES ROUND ${round}` : `ROUND ${round} DRAWN`, winner >= 0 ? teamColor(winner) : "#ffffff");
+        this.sound("trade");
+        this.cue("round", "ROUND OVER", null, 0);
+      }
     };
+  }
+
+  private isEnemyOfFocus(e: Entity): boolean {
+    const f = this.focus;
+    return !!f && !!this.src && this.src.sim.isEnemy(f, e);
+  }
+
+  private teamTag(team: number): string {
+    return `<span style="color:${teamColor(team)}">${teamGlyph(team)} ${esc(teamName(team))}</span>`;
+  }
+
+  private nameTag(e: Entity): string {
+    const teams = !!this.src?.sim.config.teams;
+    return teams ? `<span style="color:${teamColor(e.team)}">${teamGlyph(e.team)} ${esc(e.name)}</span>` : esc(e.name);
+  }
+
+  /** Held-kill feel: the hit presents the instant the blade connects; the kill confirms after the parry grace. */
+  private onStrikeLanded(a: Entity, t: Entity): void {
+    const at = this.posOf(t);
+    const view = this.views.get(t.id);
+    if (view) view.frozenFor = Math.max(view.frozenFor, 0.05);
+    this.visuals.bursts.burst(at, new THREE.Color(0xffffff), this.isFocus(a) ? 12 : 6, 6, false);
+    if (this.isFocus(a)) {
+      this.sound("lunge.kill", undefined, 0.6);
+      this.hud.hitmarker();
+      this.shake = Math.max(this.shake, 0.25 * SETTINGS.shakeScale);
+      this.startHitStop(FX.killHitStop * 0.5);
+    } else if (this.isFocus(t)) {
+      this.sound("hit.taken");
+      this.visuals.onHit();
+      this.shake = Math.max(this.shake, 0.4 * SETTINGS.shakeScale);
+    }
   }
 
   private onKill(k: Entity, v: Entity, how: KillHow): void {
     const kc = k.isPlayer ? `#${new THREE.Color(archetypeHue(k.archetype)).getHexString()}` : "#ff5a3c";
-    if (v.isPlayer) this.hud.pushFeed(`<span style="color:${kc}">${esc(k.name)}</span> <span style="opacity:.6">${KILL_WORD[how].toLowerCase()}</span> ${esc(v.name)}`);
+    const teams = !!this.src?.sim.config.teams;
+    const kName = teams && k.isPlayer ? this.nameTag(k) : `<span style="color:${kc}">${esc(k.name)}</span>`;
+    if (v.isPlayer) this.hud.pushFeed(`${kName} <span style="opacity:.6">${KILL_WORD[how].toLowerCase()}</span> ${teams ? this.nameTag(v) : esc(v.name)}`);
     const view = this.views.get(v.id);
     const at = this.posOf(v);
     const victimColor = view ? view.color.clone() : new THREE.Color(0xff5a3c);
@@ -318,17 +428,17 @@ export class Presentation {
     const mine = this.isFocus(k);
     const dead = this.isFocus(v);
     if (view) view.killed(mine || dead ? FX.killHitStop : 0.05); // held frame, then dissolve
-    this.visuals.onKill(at, victimColor, mine, killerColor);
+    this.visuals.onKill(at, victimColor, mine, killerColor, killStyle(this.cosmeticsOf(k)));
     if (mine) {
       this.sound(how === "execute" ? "execute" : how === "riposte" ? "riposte" : "lunge.kill");
       this.hud.showBanner(KILL_WORD[how], how === "execute" ? `#${new THREE.Color(FX.hueRusher).getHexString()}` : "#ffffff");
-      this.shake = 0.4;
+      this.shake = 0.4 * SETTINGS.shakeScale;
       this.startHitStop(FX.killHitStop);
     } else if (dead) {
       this.sound("death");
       this.visuals.onDeath();
       this.hud.showBanner(`CUT DOWN — ${k.name}`, "#ff5a3c");
-      this.shake = 0.9;
+      this.shake = 0.9 * SETTINGS.shakeScale;
       this.startHitStop(FX.killHitStop * 1.5);
     } else {
       this.sound("lunge.kill", v);

@@ -49,11 +49,15 @@ export function emptyHeld(): PadHeld {
   return { jump: false, lunge: false, parry: false, ability: false, descend: false, scoreboard: false, speedDown: false, speedUp: false, replayPause: false };
 }
 
-export function readPad(pad: PadLike): PadRead {
+export type PadMap = { [K in keyof typeof PAD_BUTTONS]?: readonly number[] };
+
+/** Read a pad; `map` overrides the default button layout per action (Settings remap). */
+export function readPad(pad: PadLike, map: PadMap = {}): PadRead {
   const b = (ids: readonly number[]) => ids.some((i) => !!pad.buttons[i]?.pressed || (pad.buttons[i]?.value ?? 0) > 0.5);
+  const m = (k: keyof typeof PAD_BUTTONS) => map[k] ?? PAD_BUTTONS[k];
   const held: PadHeld = {
-    jump: b(PAD_BUTTONS.jump), lunge: b(PAD_BUTTONS.lunge), parry: b(PAD_BUTTONS.parry), ability: b(PAD_BUTTONS.ability),
-    descend: b(PAD_BUTTONS.descend), scoreboard: b(PAD_BUTTONS.scoreboard),
+    jump: b(m("jump")), lunge: b(m("lunge")), parry: b(m("parry")), ability: b(m("ability")),
+    descend: b(m("descend")), scoreboard: b(m("scoreboard")),
     speedDown: b(PAD_BUTTONS.speedDown), speedUp: b(PAD_BUTTONS.speedUp), replayPause: b(PAD_BUTTONS.replayPause)
   };
   const moveX = deadzone(pad.axes[0] ?? 0);

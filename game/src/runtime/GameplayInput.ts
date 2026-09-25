@@ -1,5 +1,6 @@
 import type { PointerLook } from "@slu/web-shell";
-import { emptyHeld, padEdges, readPad, type InputDevice, type PadHeld, type PadLike } from "./GamepadMap";
+import { emptyHeld, padEdges, readPad, type InputDevice, type PadHeld, type PadLike, type PadMap } from "./GamepadMap";
+import { SETTINGS, type ActionId } from "../app/Settings";
 
 /**
  * One semantic input layer for gameplay.
@@ -33,18 +34,10 @@ export interface InputSnapshot {
   anyMove: boolean;
 }
 
-const KEYS = {
-  forward: ["KeyW", "ArrowUp"],
-  back: ["KeyS", "ArrowDown"],
-  left: ["KeyA", "ArrowLeft"],
-  right: ["KeyD", "ArrowRight"],
-  jump: ["Space"],
-  lunge: ["KeyE", "KeyJ"],
-  parry: ["KeyF", "KeyK", "ShiftLeft", "ShiftRight"],
-  ability: ["KeyQ", "KeyL"],
-  descend: ["KeyC", "ControlLeft"],
-  scoreboard: ["Tab"]
-};
+/** Key bindings come from Settings (data/controls.json defaults, player remaps). */
+function bound(action: ActionId): string[] {
+  return SETTINGS.data.keys[action] ?? [];
+}
 
 interface TouchStick {
   id: number;
@@ -89,6 +82,17 @@ export class GameplayInput {
     private readonly touchRoot: HTMLElement
   ) {}
 
+  private press(code: string): void {
+    if (bound("jump").includes(code)) this.jumpLatched = true;
+    if (bound("lunge").includes(code)) this.lungeLatched = true;
+    if (bound("parry").includes(code)) this.parryLatched = true;
+    if (bound("ability").includes(code)) this.abilityLatched = true;
+  }
+
+  private padMap(): PadMap {
+    return SETTINGS.data.pad as PadMap;
+  }
+
   get hasTouch(): boolean {
     return "ontouchstart" in window || navigator.maxTouchPoints > 0;
   }
@@ -98,21 +102,22 @@ export class GameplayInput {
       this.device = "kbm";
       if (!this.active) return;
       this.keys.add(e.code);
-      if (KEYS.jump.includes(e.code)) { this.jumpLatched = true; e.preventDefault(); }
-      if (KEYS.lunge.includes(e.code)) this.lungeLatched = true;
-      if (KEYS.parry.includes(e.code)) this.parryLatched = true;
-      if (KEYS.ability.includes(e.code)) this.abilityLatched = true;
-      if (KEYS.scoreboard.includes(e.code)) e.preventDefault();
+      if (e.repeat) return;
+      this.press(e.code);
+      if (bound("jump").includes(e.code) || bound("scoreboard").includes(e.code)) e.preventDefault();
     };
     const ku = (e: KeyboardEvent) => this.keys.delete(e.code);
     const md = (e: MouseEvent) => {
       this.device = "kbm";
       if (!this.active) return;
       this.mouseButtons.add(e.button);
-      if (e.button === 0) this.lungeLatched = true;
-      if (e.button === 2) this.parryLatched = true;
+      this.keys.add(`Mouse${e.button}`);
+      this.press(`Mouse${e.button}`);
     };
-    const mu = (e: MouseEvent) => this.mouseButtons.delete(e.button);
+    const mu = (e: MouseEvent) => {
+      this.mouseButtons.delete(e.button);
+      this.keys.delete(`Mouse${e.button}`);
+    };
     const ctx = (e: Event) => { if (this.active) e.preventDefault(); };
     const blur = () => { this.keys.clear(); this.mouseButtons.clear(); };
 
@@ -153,7 +158,7 @@ export class GameplayInput {
     const held = emptyHeld();
     for (const pad of this.padSource()) {
       if (!pad) continue;
-      const r = readPad(pad);
+      const r = readPad(pad, this.padMap());
       if (r.active) this.device = "pad";
       held.jump = held.jump || r.held.jump;
     }
@@ -170,19 +175,21 @@ export class GameplayInput {
     let lookPitch = 0;
 
     // Keyboard
-    if (has(this.keys, KEYS.forward)) moveZ += 1;
-    if (has(this.keys, KEYS.back)) moveZ -= 1;
-    if (has(this.keys, KEYS.right)) moveX += 1;
-    if (has(this.keys, KEYS.left)) moveX -= 1;
+    if (has(this.keys, bound("forward"))) moveZ += 1;
+    if (has(this.keys, bound("back"))) moveZ -= 1;
+    if (has(this.keys, bound("right"))) moveX += 1;
+    if (has(this.keys, bound("left"))) moveX -= 1;
 
+    const sens = this.lookSensitivity * SETTINGS.data.sensitivity;
+    const inv = SETTINGS.data.invertY ? -1 : 1;
     // Mouse look
     const md = this.pointerLook.consume();
-    lookYaw += -md.x * this.lookSensitivity;
-    lookPitch += -md.y * this.lookSensitivity;
+    lookYaw += -md.x * sens;
+    lookPitch += -md.y * sens * inv;
 
     // Touch look (accumulated drag)
-    lookYaw += -this.lookAccum.x * this.lookSensitivity;
-    lookPitch += -this.lookAccum.y * this.lookSensitivity;
+    lookYaw += -this.lookAccum.x * sens;
+    lookPitch += -this.lookAccum.y * sens * inv;
     this.lookAccum.x = 0;
     this.lookAccum.y = 0;
 
@@ -196,12 +203,12 @@ export class GameplayInput {
     const held = emptyHeld();
     for (const pad of this.padSource()) {
       if (!pad) continue;
-      const r = readPad(pad);
+      const r = readPad(pad, this.padMap());
       if (r.active) this.device = "pad";
       moveX += r.moveX;
       moveZ += r.moveZ;
-      lookYaw += -r.lookX * this.padLookSpeed * dt;
-      lookPitch += -r.lookY * this.padLookSpeed * dt;
+      lookYaw += -r.lookX * this.padLookSpeed * SETTINGS.data.sensitivity * dt;
+      lookPitch += -r.lookY * this.padLookSpeed * SETTINGS.data.sensitivity * inv * dt;
       for (const k of Object.keys(held) as (keyof PadHeld)[]) held[k] = held[k] || r.held[k];
     }
     const edge = padEdges(held, this.prevPad);
@@ -233,8 +240,8 @@ export class GameplayInput {
       lunge,
       parry,
       ability,
-      descend: has(this.keys, KEYS.descend) || held.descend,
-      scoreboard: has(this.keys, KEYS.scoreboard) || held.scoreboard,
+      descend: has(this.keys, bound("descend")) || held.descend,
+      scoreboard: has(this.keys, bound("scoreboard")) || held.scoreboard,
       padSpeedDown: edge.speedDown,
       padSpeedUp: edge.speedUp,
       padReplayPause: edge.replayPause,

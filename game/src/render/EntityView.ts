@@ -1,6 +1,9 @@
 import * as THREE from "three";
 import { FX } from "../config/tuning";
 import type { Archetype, EntityKind } from "../sim/types";
+import type { Cosmetics } from "../sim/MatchConfig";
+import { bladeEdgeColor } from "./Cosmetics";
+import { SETTINGS } from "../app/Settings";
 
 const H = 1.8;
 const R = 0.45;
@@ -51,6 +54,10 @@ export class EntityView {
   private coreMat: THREE.MeshStandardMaterial;
   private blades: THREE.Object3D[] = [];
   private tag: THREE.Mesh | null = null;
+  /** Ally marker: a ring (shape differs from the enemy chevron — never color alone). */
+  private allyTag: THREE.Mesh | null = null;
+  private edgeMat: THREE.MeshStandardMaterial;
+  cosmetics: Cosmetics | undefined = undefined;
   private tagMat: THREE.MeshBasicMaterial | null = null;
   private revealRing: THREE.Mesh | null = null;
   private bob = 0;
@@ -67,6 +74,7 @@ export class EntityView {
     this.hue.set(hue);
     this.bodyMat = new THREE.MeshStandardMaterial({ color: 0x3a4352, emissive: new THREE.Color(hue), emissiveIntensity: 0.03, roughness: 0.32, metalness: 0.8, transparent: kind === "player" });
     this.coreMat = new THREE.MeshStandardMaterial({ color: 0x05070b, emissive: new THREE.Color(hue), emissiveIntensity: 1.1, roughness: 0.4, transparent: kind === "player" });
+    this.edgeMat = this.coreMat.clone();
     this.build();
   }
 
@@ -111,7 +119,7 @@ export class EntityView {
       const blade = (len: number, side: number) => {
         const b = new THREE.Group();
         const spine = new THREE.Mesh(new THREE.BoxGeometry(0.05, len, 0.16), this.bodyMat);
-        const edge = new THREE.Mesh(new THREE.BoxGeometry(0.03, len - 0.04, 0.03), this.coreMat);
+        const edge = new THREE.Mesh(new THREE.BoxGeometry(0.03, len - 0.04, 0.03), this.kind === "player" ? this.edgeMat : this.coreMat);
         edge.position.z = 0.09;
         b.add(spine, edge);
         b.position.set(side * (R + 0.22), H * 0.6, 0.2);
@@ -130,6 +138,10 @@ export class EntityView {
         this.tag.rotation.x = Math.PI;
         this.tag.position.y = H + 0.55;
         g.add(this.tag);
+        this.allyTag = new THREE.Mesh(new THREE.TorusGeometry(0.11, 0.025, 6, 20), this.tagMat);
+        this.allyTag.rotation.x = Math.PI / 2;
+        this.allyTag.position.y = H + 0.55;
+        g.add(this.allyTag);
         // Ghost-marker reveal ring (drawn through walls).
         const rm = new THREE.MeshBasicMaterial({ color: FX.hueGhost, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false });
         this.revealRing = new THREE.Mesh(new THREE.TorusGeometry(0.7, 0.03, 6, 40), rm);
@@ -143,7 +155,7 @@ export class EntityView {
   }
 
   private setTransparent(on: boolean): void {
-    for (const m of [this.bodyMat, this.coreMat]) {
+    for (const m of [this.bodyMat, this.coreMat, this.edgeMat]) {
       if (m.transparent === on) continue;
       m.transparent = on;
       m.needsUpdate = true;
@@ -185,6 +197,7 @@ export class EntityView {
       this.bodyMat.opacity = k * k;
       this.coreMat.opacity = k;
       this.coreMat.emissiveIntensity = 3 + (1 - k) * 6;
+      this.edgeMat.opacity = k;
       return;
     }
     if (this.kind !== "player" && this.bodyMat.transparent) this.setTransparent(false); // opaque sorting for targets
@@ -209,9 +222,15 @@ export class EntityView {
       this.bodyMat.opacity = op;
       this.coreMat.opacity = Math.min(1, op * 1.3);
       if (this.tagMat) {
-        this.tagMat.color.set(s.enemy ? 0xff4a3a : 0x9ff0ff);
+        const pal = SETTINGS.palette;
+        this.tagMat.color.set(s.enemy ? pal.enemy : pal.ally);
         this.tagMat.opacity = 0.85 * op;
+        if (this.tag) this.tag.visible = s.enemy;
+        if (this.allyTag) this.allyTag.visible = !s.enemy;
       }
+      bladeEdgeColor(this.cosmetics, this.archetype, time, this.edgeMat.emissive);
+      this.edgeMat.emissiveIntensity = Math.max(0.6, this.coreMat.emissiveIntensity * 1.2);
+      this.edgeMat.opacity = this.coreMat.opacity;
       if (this.revealRing) {
         this.revealRing.visible = s.revealed;
         this.revealRing.rotation.z += dt * 2;
@@ -247,6 +266,7 @@ export class EntityView {
   dispose(): void {
     this.bodyMat.dispose();
     this.coreMat.dispose();
+    this.edgeMat.dispose();
     this.tagMat?.dispose();
     this.group.traverse((o) => {
       if (o instanceof THREE.Mesh && o.geometry) o.geometry.dispose();

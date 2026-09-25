@@ -15,6 +15,11 @@ export interface RenderPipelineOptions {
   bloomStrength?: number;
   bloomRadius?: number;
   bloomThreshold?: number;
+  /** Graphics preset / toggles (Settings). */
+  bloom?: boolean;
+  shadows?: boolean;
+  msaa?: number;
+  maxDpr?: number;
 }
 
 /**
@@ -34,9 +39,13 @@ export class RenderPipeline {
   private bloom: UnrealBloomPass;
   private grade: ShaderPass;
   private envTarget: THREE.WebGLRenderTarget | null = null;
+  private readonly maxDpr: number;
+  private readonly bloomOn: boolean;
 
   constructor(scene: THREE.Scene, camera: THREE.Camera, opts: RenderPipelineOptions) {
     this.quality = opts.quality;
+    this.maxDpr = opts.maxDpr ?? (opts.quality === "high" ? 1.5 : 1.0);
+    this.bloomOn = opts.bloom ?? true;
     this.renderer = new THREE.WebGLRenderer({
       canvas: opts.canvas,
       antialias: false, // the composer renders to its own targets; MSAA below
@@ -45,7 +54,7 @@ export class RenderPipeline {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = opts.exposure ?? 1.0;
-    this.renderer.shadowMap.enabled = opts.quality === "high";
+    this.renderer.shadowMap.enabled = opts.shadows ?? opts.quality === "high";
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.info.autoReset = false; // count every pass in a frame, not just the last
 
@@ -58,7 +67,7 @@ export class RenderPipeline {
 
     const target = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType,
-      samples: opts.quality === "high" ? 4 : 0
+      samples: opts.msaa ?? (opts.quality === "high" ? 4 : 0)
     });
     this.composer = new EffectComposer(this.renderer, target);
     this.renderPass = new RenderPass(scene, camera);
@@ -70,6 +79,7 @@ export class RenderPipeline {
       opts.bloomRadius ?? 0.55,
       opts.bloomThreshold ?? 0.82
     );
+    this.bloom.enabled = this.bloomOn;
     this.composer.addPass(this.bloom);
 
     this.grade = new ShaderPass(GradeShader);
@@ -88,13 +98,13 @@ export class RenderPipeline {
   }
 
   setBloomStrength(strength: number): void {
-    this.bloom.strength = strength;
+    this.bloom.strength = this.bloomOn ? strength : 0;
   }
 
   resize(w: number, h: number, dpr: number): void {
     // 1.5x keeps edges crisp on retina without rendering 4x the pixels of 1x;
     // MSAA on the composer target covers the rest.
-    const ratio = Math.min(dpr, this.quality === "high" ? 1.5 : 1.0);
+    const ratio = Math.min(dpr, this.maxDpr);
     this.renderer.setPixelRatio(ratio);
     this.renderer.setSize(w, h, false);
     this.composer.setPixelRatio(ratio);
@@ -102,6 +112,10 @@ export class RenderPipeline {
     // Bloom is soft by nature; run it at reduced resolution on low tier.
     const bloomScale = this.quality === "high" ? 0.5 : 0.35;
     this.bloom.resolution.set(w * ratio * bloomScale, h * ratio * bloomScale);
+  }
+
+  setExposure(v: number): void {
+    this.renderer.toneMappingExposure = v;
   }
 
   render(dt: number): void {

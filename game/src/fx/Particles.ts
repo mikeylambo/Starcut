@@ -131,6 +131,19 @@ export class BurstPool {
     this.rings.push({ mesh: ring, life: 0.3, maxLife: 0.3 });
   }
 
+  /** A slower, larger shock ring (kill effects): `segments` 6 = a hexagon glyph; `spin` rad/s. */
+  shock(at: THREE.Vector3, color: THREE.Color, size: number, life: number, segments: number, faceCamera?: THREE.Camera, spin = 0): void {
+    const geo = new THREE.RingGeometry(0.2 * size, 0.26 * size, segments);
+    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(at);
+    if (faceCamera) mesh.quaternion.copy(faceCamera.quaternion);
+    mesh.userData.ownGeo = true;
+    mesh.userData.spin = spin;
+    this.scene.add(mesh);
+    this.rings.push({ mesh, life, maxLife: life });
+  }
+
   update(dt: number): void {
     for (let i = this.shards.length - 1; i >= 0; i--) {
       const s = this.shards[i];
@@ -152,11 +165,13 @@ export class BurstPool {
       const r = this.rings[i];
       r.life -= dt;
       const k = 1 - r.life / r.maxLife;
-      r.mesh.scale.setScalar(1 + k * 9);
+      r.mesh.scale.setScalar(1 + k * (r.mesh.userData.ownGeo ? 4 : 9));
+      if (r.mesh.userData.spin) r.mesh.rotateZ(r.mesh.userData.spin * dt);
       (r.mesh.material as THREE.MeshBasicMaterial).opacity = (1 - k) * 0.9;
       if (r.life <= 0) {
         this.scene.remove(r.mesh);
         (r.mesh.material as THREE.Material).dispose();
+        if (r.mesh.userData.ownGeo) r.mesh.geometry.dispose();
         this.rings.splice(i, 1);
       }
     }

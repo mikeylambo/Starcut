@@ -4,6 +4,9 @@ import type { Archetype } from "../sim/types";
 import { archetypeHue, glowIntensity } from "../render/EntityView";
 import type { RenderPipeline } from "../render/RenderPipeline";
 import { BurstPool } from "./Particles";
+import { SETTINGS } from "../app/Settings";
+import { afterimageColor, bladeEdgeColor, bladeIsDark, killStyle, type KillStyle } from "../render/Cosmetics";
+import type { Cosmetics } from "../sim/MatchConfig";
 
 /**
  * Viewmodel poses (view space). The blade model points along +X; the Euler
@@ -74,6 +77,10 @@ export class VisualState {
   private time = 0;
 
   private afterimages: Afterimage[] = [];
+  private afterimageN = 0;
+  /** Equipped cosmetics for the viewmodel (my own, or the followed player's). */
+  cosmetics: Cosmetics | undefined = undefined;
+  private readonly tmpColor = new THREE.Color();
   private spawnAccum = 0;
   private readonly ghostGeo: THREE.BufferGeometry;
   readonly bursts: BurstPool;
@@ -170,11 +177,12 @@ export class VisualState {
     this.time += dt;
     this.kit = archetype;
     this.glow.set(archetypeHue(archetype));
-    this.edgeMat.emissive.copy(this.glow);
+    this.edgeMat.emissive.copy(bladeEdgeColor(this.cosmetics, archetype, this.time, this.tmpColor));
+    this.bodyMat.color.set(bladeIsDark(this.cosmetics) ? 0x07080b : 0x1a1f28);
     this.edgeMat.emissiveIntensity = glowIntensity(flow, this.time);
     this.offRig.visible = archetype === "reflex";
     // The whole frame blooms harder as Flow rises; max Flow gets a hint of fringe.
-    this.pipeline.setBloomStrength(0.75 + flow * 0.55 + (this.flashTimer > 0 ? 0.8 : 0));
+    this.pipeline.setBloomStrength(0.75 + flow * 0.55 + (this.flashTimer > 0 ? 0.8 * SETTINGS.bloomSpikeScale : 0));
 
     this.animateViewmodel(dt, lunge, motion);
 
@@ -195,14 +203,14 @@ export class VisualState {
     // --- Invert flash decay ----------------------------------------------
     if (this.flashTimer > 0) {
       this.flashTimer = Math.max(0, this.flashTimer - dt);
-      this.invertEl.style.opacity = String((this.flashTimer / this.flashMax) * 0.9);
+      this.invertEl.style.opacity = String((this.flashTimer / this.flashMax) * 0.9 * SETTINGS.flashScale);
     }
 
     // --- Grade pulse (hit / parry) + Flow fringe --------------------------
     this.pulse = Math.max(0, this.pulse - dt * 3.2);
     this.pipeline.setGrade({
       tint: this.pulseColor,
-      tintAmount: this.pulse * 0.6,
+      tintAmount: this.pulse * 0.6 * (SETTINGS.data.reducedFlashing ? 0.4 : 1),
       aberration: 0.0012 + flow * flow * 0.0016 + this.pulse * 0.006,
       vignette: 0.32 + this.pulse * 0.25
     });
@@ -261,7 +269,7 @@ export class VisualState {
 
   private spawnAfterimage(maxLife: number): void {
     const mat = new THREE.MeshBasicMaterial({
-      color: this.glow.clone(),
+      color: afterimageColor(this.cosmetics, this.kit, this.afterimageN++).clone(),
       transparent: true,
       opacity: 0.6,
       blending: THREE.AdditiveBlending,
@@ -290,14 +298,17 @@ export class VisualState {
   }
 
   /** Clean kill: invert flash (your kills) + shard burst in the killer's glow. */
-  onKill(at: THREE.Vector3, targetColor: THREE.Color, mine = true, killerColor: THREE.Color = this.glow): void {
+  onKill(at: THREE.Vector3, targetColor: THREE.Color, mine = true, killerColor: THREE.Color = this.glow, style: KillStyle = mine ? killStyle(this.cosmetics) : "shards"): void {
     if (mine) {
-      this.flashMax = FX.invertFlash;
-      this.flashTimer = FX.invertFlash;
-      this.invertEl.style.opacity = "0.9";
+      const long = style === "invert" ? 2.2 : 1;
+      this.flashMax = FX.invertFlash * long;
+      this.flashTimer = this.flashMax;
+      this.invertEl.style.opacity = String(0.9 * SETTINGS.flashScale);
     }
     this.bursts.burst(at, targetColor, mine ? 26 : 16, 9, true, this.camera);
     this.bursts.burst(at, killerColor, 10, 5, false, this.camera);
+    if (style === "nova") this.bursts.shock(at, killerColor, 2.6, 0.7, 48, this.camera);
+    if (style === "glyph") this.bursts.shock(at, killerColor, 1.6, 0.9, 6, this.camera, 3);
   }
 
   /** You were cut down. */
@@ -313,7 +324,7 @@ export class VisualState {
       this.pulse = heavy ? 1.5 : 1;
       this.flashMax = heavy ? FX.heavyParryFlash : FX.parryFlash;
       this.flashTimer = this.flashMax;
-      this.invertEl.style.opacity = "0.9";
+      this.invertEl.style.opacity = String(0.9 * SETTINGS.flashScale);
     }
     const sparks = new THREE.Color(heavy ? 0xffffff : 0x9ff0ff);
     this.bursts.burst(at, sparks, heavy ? 42 : 18, heavy ? 11 : 7, false, this.camera);

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { teamColor, teamGlyph, teamName } from "../app/Settings";
 
 export type MeterBand = "idle" | "mid" | "max";
 
@@ -39,6 +40,11 @@ export class Hud {
   private net: HTMLDivElement;
   private markers: HTMLDivElement;
   private markerEls: HTMLDivElement[] = [];
+  private modeStrip: HTMLDivElement;
+  private cues: HTMLDivElement;
+  private cueItems: { el: HTMLDivElement; t: number }[] = [];
+  private hitEl: HTMLDivElement;
+  private hitT = 0;
 
   constructor(parent: HTMLElement) {
     this.root = el("div", "position:fixed;inset:0;z-index:30;pointer-events:none;font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#eaf2ff;");
@@ -81,6 +87,19 @@ export class Hud {
       "position:absolute;left:50%;top:14px;transform:translateX(-50%);font-size:15px;font-weight:700;letter-spacing:.12em;" +
       "text-shadow:0 1px 8px rgba(0,0,0,.7);white-space:pre;text-align:center;");
     this.root.appendChild(this.status);
+
+    this.modeStrip = el("div",
+      "position:absolute;left:50%;top:62px;transform:translateX(-50%);display:flex;gap:10px;align-items:center;font-size:12px;" +
+      "letter-spacing:.1em;text-shadow:0 1px 6px rgba(0,0,0,.7);white-space:nowrap;");
+    this.root.appendChild(this.modeStrip);
+
+    this.cues = el("div", "position:absolute;left:22px;top:42%;display:grid;gap:4px;font-size:12px;font-weight:700;letter-spacing:.12em;");
+    this.root.appendChild(this.cues);
+
+    this.hitEl = el("div", "position:absolute;left:50%;top:50%;width:26px;height:26px;margin:-13px 0 0 -13px;opacity:0;transition:opacity .05s;");
+    this.hitEl.innerHTML = "<svg viewBox='0 0 26 26' width='26' height='26'><g stroke='#fff' stroke-width='2.4' stroke-linecap='round'>" +
+      "<line x1='3' y1='3' x2='9' y2='9'/><line x1='23' y1='3' x2='17' y2='9'/><line x1='3' y1='23' x2='9' y2='17'/><line x1='23' y1='23' x2='17' y2='17'/></g></svg>";
+    this.root.appendChild(this.hitEl);
 
     this.feed = el("div", "position:absolute;right:18px;top:18px;display:grid;gap:4px;justify-items:end;font-size:12px;letter-spacing:.04em;");
     this.root.appendChild(this.feed);
@@ -221,14 +240,37 @@ export class Hud {
     while (this.feedItems.length > 6) this.feedItems.pop()!.el.remove();
   }
 
+  /** Mode objective strip under the clock (flags / zone / rounds). HTML from the runtime. */
+  setModeStrip(html: string): void {
+    if (this.modeStrip.innerHTML !== html) this.modeStrip.innerHTML = html;
+  }
+
+  /** Visual cue for an important sound; `angle` (rad, 0 = ahead) draws a direction arrow. */
+  pushCue(text: string, angle: number | null): void {
+    const item = el("div", "background:rgba(0,0,0,.55);padding:3px 9px;border-radius:6px;border-left:3px solid #ffd27a;display:flex;gap:8px;align-items:center;");
+    const arrow = angle === null ? "" : `<span style="display:inline-block;transform:rotate(${(-angle * 180) / Math.PI}deg)">▲</span>`;
+    item.innerHTML = `${arrow}<span>${esc(text)}</span>`;
+    this.cues.prepend(item);
+    this.cueItems.unshift({ el: item, t: 2.2 });
+    while (this.cueItems.length > 4) this.cueItems.pop()!.el.remove();
+  }
+
+  /** Hit-confirm marker at the crosshair (the moment a strike connects). */
+  hitmarker(): void {
+    this.hitT = 0.22;
+    this.hitEl.style.opacity = "1";
+  }
+
   setScoreboard(visible: boolean, title = "", rows: ScoreRow[] = [], teamScores: number[] | null = null): void {
     this.board.style.display = visible ? "block" : "none";
     if (!visible) return;
-    const hdr = teamScores
-      ? `<div style="display:flex;justify-content:space-between;font-weight:800;letter-spacing:.1em;margin-bottom:8px"><span style="color:#9ff0ff">TEAM A ${teamScores[0]}</span><span>${esc(title)}</span><span style="color:#ff9a8a">${teamScores[1]} TEAM B</span></div>`
-      : `<div style="font-weight:800;letter-spacing:.1em;margin-bottom:8px">${esc(title)}</div>`;
+    const hdr = `<div style="font-weight:800;letter-spacing:.1em;margin-bottom:6px;text-align:center">${esc(title)}</div>` +
+      (teamScores
+        ? `<div style="display:flex;justify-content:space-around;gap:14px;font-weight:800;letter-spacing:.1em;margin-bottom:8px">` +
+          teamScores.map((s, t) => `<span style="color:${teamColor(t)}">${teamGlyph(t)} ${teamName(t)} ${Math.floor(s)}</span>`).join("") + "</div>"
+        : "");
     const body = rows.map((r) =>
-      `<tr style="${r.me ? "color:#fff;font-weight:700" : "opacity:.85"}"><td style="padding:2px 8px">${teamScores ? (r.team === 0 ? "A" : "B") : ""}</td>` +
+      `<tr style="${r.me ? "color:#fff;font-weight:700" : "opacity:.85"}"><td style="padding:2px 8px;color:${teamScores ? teamColor(r.team) : "inherit"}">${teamScores ? teamGlyph(r.team) : ""}</td>` +
       `<td>${esc(r.name)}${r.human ? "" : ' <span style="opacity:.45">bot</span>'}</td><td style="opacity:.7">${esc(r.archetype)}</td>` +
       `<td style="text-align:right;padding:0 10px">${r.kills}</td><td style="text-align:right">${r.deaths}</td><td style="padding-left:8px;opacity:.6">${r.alive ? "" : "✕"}</td></tr>`
     ).join("");
@@ -254,6 +296,19 @@ export class Hud {
   }
 
   update(dt: number): void {
+    if (this.hitT > 0) {
+      this.hitT -= dt;
+      if (this.hitT <= 0) this.hitEl.style.opacity = "0";
+    }
+    for (let i = this.cueItems.length - 1; i >= 0; i--) {
+      const it = this.cueItems[i];
+      it.t -= dt;
+      if (it.t < 0.5) it.el.style.opacity = String(Math.max(0, it.t * 2));
+      if (it.t <= 0) {
+        it.el.remove();
+        this.cueItems.splice(i, 1);
+      }
+    }
     if (this.bannerTimer > 0) {
       this.bannerTimer -= dt;
       if (this.bannerTimer <= 0) {

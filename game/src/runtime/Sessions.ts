@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { BotBrain } from "../bots/BotBrain";
-import { drillInfo, practiceConfig, type DrillId } from "../sim/MatchConfig";
+import { drillInfo, matchConfig, practiceConfig, type Cosmetics, type DrillId, type MatchConfig } from "../sim/MatchConfig";
+import { BETA, BOTS, type ModeId } from "../content/Content";
 import { ReplayPlayer, ReplayRecorder, newReplayId, type ReplayData } from "../sim/Replay";
 import { Simulation, type SimEvents } from "../sim/Simulation";
 import { TICK, type Archetype, type SimInput } from "../sim/types";
@@ -51,6 +52,19 @@ class PrevPoses {
 
 // ---------------------------------------------------------------------------
 
+export interface OfflineBot {
+  seat: number;
+  level: number;
+  personality?: string;
+}
+
+/** Offline difficulty ramp (bots.json offlineMatchRamp): bots get sharper as the match goes on. */
+export interface BotRamp {
+  startTier: number;
+  stepEverySec: number;
+  maxTier: number;
+}
+
 export class LocalSession implements Session {
   readonly kind = "local";
   readonly sim: Simulation;
@@ -60,16 +74,33 @@ export class LocalSession implements Session {
   private prev = new PrevPoses();
   readonly recorder: ReplayRecorder;
   alpha = 0;
+  private elapsed = 0;
 
-  constructor(readonly drill: DrillId, archetype: Archetype, difficulty: number) {
-    const cfg = practiceConfig(drill, archetype);
-    this.sim = new Simulation(cfg);
-    const info = drillInfo(drill);
-    info.duelists.forEach((d, i) => {
-      this.brains.push(new BotBrain(this.sim, i + 1, difficulty, d.personality as never, 1 + i));
-    });
-    this.recorder = new ReplayRecorder(cfg, newReplayId());
+  constructor(readonly config: MatchConfig, bots: OfflineBot[], private readonly ramp: BotRamp | null = null) {
+    this.sim = new Simulation(config);
+    bots.forEach((b, i) => this.brains.push(new BotBrain(this.sim, b.seat, b.level, (b.personality ?? null) as never, 1 + i)));
+    this.recorder = new ReplayRecorder(config, newReplayId());
     this.prev.save(this.sim);
+  }
+
+  /** Practice Range drill (offline). */
+  static practice(drill: DrillId, archetype: Archetype, difficulty: number, cosmetics?: Cosmetics, mapId = "voidglass"): LocalSession {
+    const cfg = practiceConfig(drill, archetype, mapId);
+    if (cosmetics) cfg.seats[0].cosmetics = cosmetics;
+    const info = drillInfo(drill);
+    return new LocalSession(cfg, info.duelists.map((d, i) => ({ seat: i + 1, level: difficulty, personality: d.personality })));
+  }
+
+  /** An offline bot match on any mode + map (onboarding's eased first match). */
+  static match(mode: ModeId, mapId: string, archetype: Archetype, name: string, seconds: number, ramp: BotRamp = BOTS.offlineMatchRamp, cosmetics?: Cosmetics): LocalSession {
+    const cfg = matchConfig(mode, mapId, [archetype], [name], { timeLimitSec: seconds });
+    if (cosmetics) cfg.seats[0].cosmetics = cosmetics;
+    const bots = cfg.seats.slice(1).map((_, i) => ({ seat: i + 1, level: ramp.startTier }));
+    return new LocalSession(cfg, bots, ramp);
+  }
+
+  get drill(): DrillId {
+    return this.config.drill ?? "sandbox";
   }
 
   get over(): boolean {
@@ -80,6 +111,11 @@ export class LocalSession implements Session {
     this.acc += Math.min(realDt, MAX_FRAME);
     while (this.acc >= TICK) {
       this.acc -= TICK;
+      if (this.ramp) {
+        this.elapsed += TICK;
+        const level = Math.min(this.ramp.maxTier, this.ramp.startTier + Math.floor(this.elapsed / this.ramp.stepEverySec));
+        for (const b of this.brains) if (b.difficulty !== level) b.setDifficulty(level);
+      }
       const inputs: SimInput[] = [];
       inputs[0] = sample();
       for (const b of this.brains) inputs[b.seat] = b.think(inputs);
@@ -118,6 +154,7 @@ export class NetSession implements Session {
   specFollow = -1;
   specCam = new THREE.Vector3(0, 6, 0);
   private placeholder: Simulation | null = null;
+  private lastCorrReport = 0;
 
   constructor(url: string, port: number, hello: Omit<HelloMsg, "v">) {
     this.net = new NetClient(url, port);
@@ -139,7 +176,7 @@ export class NetSession implements Session {
   }
 
   get over(): boolean {
-    return this.net.status === "ended";
+    return this.net.status === "results";
   }
 
   /** True when I have no body to drive: full room, or eliminated. */
@@ -162,6 +199,11 @@ export class NetSession implements Session {
     if (me) {
       const before = me.feet.clone();
       if (pc.reconcile()) {
+        // Large corrections are logged server-side with an auto-saved clip.
+        if (pc.lastCorrection > BETA.correctionLogMeters && performance.now() - this.lastCorrReport > 5000) {
+          this.lastCorrReport = performance.now();
+          this.net.reportCorrection(pc.sim.tick, pc.lastCorrection);
+        }
         // Smooth the correction instead of snapping the camera.
         const d = before.sub(me.feet);
         if (d.length() < 2) this.smooth.add(d);
@@ -185,7 +227,7 @@ export class NetSession implements Session {
   pose(id: number): Pose | null {
     const pc = this.net.pc;
     if (!pc) return null;
-    if (id === this.mySeat) {
+    if (id === this.mySeat && !this.net.away) {
       const e = pc.sim.entities[id];
       if (!e) return null;
       const p = this.prevOwn;

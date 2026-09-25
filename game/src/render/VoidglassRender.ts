@@ -10,6 +10,8 @@ import {
   type SurfaceSet
 } from "./ProceduralTextures";
 import type { QualityTier } from "./RenderPipeline";
+import { landmarkSigns } from "./DataMapRender";
+import { mapDef } from "../content/Content";
 
 interface Debris {
   mesh: THREE.Mesh;
@@ -87,7 +89,34 @@ export class VoidglassRender {
     this.buildChamberA();
     this.buildThroat();
     this.buildZeroGRoom();
+    this.buildVista();
     this.mergeStatic();
+    // v5 art pass: landmark signage so callouts have names on screen.
+    this.group.add(landmarkSigns(mapDef("voidglass"), new THREE.Color(0x9fc4ff)));
+  }
+
+  /**
+   * v5 art pass — the view through the Window Wall: a gas giant with a lit
+   * rim and a thin ring, so Voidglass has a landmark you can orient by.
+   * Presentation only (outside every collider).
+   */
+  private buildVista(): void {
+    const vista = new THREE.Group();
+    vista.position.set(150, -18, -40);
+    const planet = new THREE.Mesh(
+      new THREE.SphereGeometry(70, 48, 32),
+      new THREE.MeshStandardMaterial({ color: 0x3a2a6b, emissive: 0x1a0f3a, emissiveIntensity: 0.7, roughness: 1, metalness: 0, fog: false })
+    );
+    const rim = new THREE.PointLight(0xc9a2ff, 600, 260, 1.4);
+    rim.position.set(-40, 60, 60);
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(92, 118, 96),
+      new THREE.MeshBasicMaterial({ color: 0xb9a4ff, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false, fog: false })
+    );
+    ring.rotation.set(Math.PI / 2.3, 0.3, 0);
+    vista.add(planet, rim, ring);
+    vista.traverse((o) => { o.userData.dynamic = true; });
+    this.group.add(vista);
   }
 
   /**
