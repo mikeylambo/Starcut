@@ -388,9 +388,30 @@ export class BotBrain {
     let move = new THREE.Vector3();
     let attack = false;
     if (!ready) {
-      // Circle the player at ~9 m to build Flow, in plain view.
-      const tangent = new THREE.Vector3(-to.z, 0, to.x).normalize();
-      move.copy(tangent).addScaledVector(to.clone().normalize(), (d - 9) * 0.15).normalize();
+      // Run laps between nav nodes near the player to build Flow, in plain view.
+      // (Circling the player at a fixed radius ran into walls in small rooms.)
+      if (!this.anchor || this.anchor.distanceTo(me.feet) < 1.5) {
+        const g = navGraph(this.sim.map);
+        const near = g.nodes.filter((n) => n.distanceTo(target.feet) < 13 && Math.abs(n.y - target.feet.y) < 1.5);
+        const pool = near.length >= 2 ? near : g.nodes;
+        // Prefer the longest straight run with body clearance: straight sprints build Flow.
+        const map = this.sim.map;
+        const clear = (n: THREE.Vector3) => {
+          const d = new THREE.Vector3().subVectors(n, me.feet).setY(0);
+          const side = new THREE.Vector3(-d.z, 0, d.x).normalize().multiplyScalar(0.5);
+          for (const [ox, oz, h] of [[0, 0, 0.5], [0, 0, 1.6], [side.x, side.z, 1.0], [-side.x, -side.z, 1.0]]) {
+            if (segmentBlocked(me.feet.x + ox, me.feet.y + h, me.feet.z + oz, n.x + ox, n.y + h, n.z + oz, map.solids)) return false;
+          }
+          return true;
+        };
+        let best: THREE.Vector3 | null = null;
+        for (const n of pool) {
+          if (n.distanceTo(me.feet) < 3 || !clear(n)) continue;
+          if (!best || n.distanceTo(me.feet) + this.rng.next() * 2 > best.distanceTo(me.feet)) best = n;
+        }
+        this.anchor = (best ?? pool[Math.floor(this.rng.next() * pool.length)]).clone();
+      }
+      move = this.pathDir(this.anchor);
       this.lookAlong(move);
     } else {
       this.aimAt(target.center, 0);
@@ -398,7 +419,10 @@ export class BotBrain {
       const reach = LUNGE.baseRange + LUNGE.flowRange * me.flow.value;
       if (d <= reach * 0.8 && this.alignment(target.center) > 0.99 && me.lunge.canStart()) attack = true;
     }
-    if (this.antiStuck(move)) return this.finish(move, attack, false, false, true);
+    if (this.antiStuck(move)) {
+      if (!ready) this.anchor = null; // snagged on a corner: pick another lap node
+      return this.finish(move, attack, false, false, true);
+    }
     return this.finish(move, attack, false, false);
   }
 

@@ -130,6 +130,7 @@ export class StarcutRuntime {
   // Hidden-tab ticker (online keeps simulating + sending neutral input)
   private ticker: Worker | null = null;
   private hiddenLast = 0;
+  private hiddenTicking = false;
 
   constructor(private readonly opts: StarcutRuntimeOptions) {
     this.scene.fog = new THREE.FogExp2(0x070a12, 0.016);
@@ -540,7 +541,7 @@ export class StarcutRuntime {
 
   /** One tick of my input for the sim (neutral while not playing: look held, no presses). */
   private sampleTick = (): SimInput => {
-    if (!this.playing || this.spectating || document.hidden) {
+    if (!this.playing || this.spectating || this.hiddenTicking) {
       const i = emptyInput();
       i.yaw = this.lookYaw;
       i.pitch = this.lookPitch;
@@ -636,7 +637,9 @@ export class StarcutRuntime {
     if (this.playing) this.suspend();
     const dt = this.hiddenLast ? Math.min(0.25, (now - this.hiddenLast) / 1000) : TICK;
     this.hiddenLast = now;
+    this.hiddenTicking = true;
     s.update(dt, this.sampleTick, this.present.events());
+    this.hiddenTicking = false;
     if (s.over && !this.resultsShown) this.finish();
   }
 
@@ -644,6 +647,21 @@ export class StarcutRuntime {
 
   private frame = (now: number): void => {
     if (!this.booted) return;
+    this.tickFrame(now);
+    requestAnimationFrame(this.frame);
+  };
+
+  /**
+   * Dev/test aid: advance  of frames at 60 Hz synchronously. Browser
+   * checks use it when the pane is hidden and requestAnimationFrame is paused.
+   * Reachable only through the dev-only window.__starcut handle.
+   */
+  devPump(seconds: number): void {
+    const n = Math.round(seconds * 60);
+    for (let i = 0; i < n && this.booted; i++) this.tickFrame(this.lastTime + 1000 / 60);
+  }
+
+  private tickFrame(now: number): void {
     let dt = (now - this.lastTime) / 1000;
     this.lastTime = now;
     dt = Math.min(dt, 0.1);
@@ -673,8 +691,7 @@ export class StarcutRuntime {
     this.updateHud(dt);
     this.render(dt, fxDt);
     this.updatePerfOverlay(now);
-    requestAnimationFrame(this.frame);
-  };
+  }
 
   private finish(): void {
     const s = this.session!;

@@ -638,6 +638,8 @@ export class Simulation {
     let bestD = Infinity;
     for (const p of this.players) {
       if (!p.alive || !this.isEnemy(bot, p)) continue;
+      // Practice targets exist for the player: they never engage a drill's duelists.
+      if (this.config.mode === "practice" && p.id !== 0) continue;
       const d = dlen(p.feet.x - bot.feet.x, p.feet.z - bot.feet.z);
       if (d < bestD) {
         bestD = d;

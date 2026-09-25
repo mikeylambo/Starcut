@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BETA, FACTIONS, MAPS, MODE_IDS, PROGRESSION, modeDef, validateContent, type ModeId } from "../src/content/Content";
-import { matchConfig, type MatchConfig } from "../src/sim/MatchConfig";
+import { matchConfig, practiceConfig, type MatchConfig } from "../src/sim/MatchConfig";
 import { Simulation, NOOP_EVENTS, type SimEvents } from "../src/sim/Simulation";
 import { BotBrain } from "../src/bots/BotBrain";
 import { ReplayPlayer, ReplayRecorder, type ReplayData } from "../src/sim/Replay";
@@ -391,4 +391,21 @@ test("Feedback capture: F8 in a match saves the last 30 s as a replay clip that 
   const auto = rig.room.correction(p, { tick: 1000, m: BETA.correctionLogMeters + 1 })!;
   assert.equal(auto.kind, "correction");
   assert.ok(auto.tags.includes("Bug"));
+});
+
+test("Lessons: the Reflex lesson's executor reaches an execute quickly wherever the player stands", () => {
+  for (const [x, z] of [[-7.6, 9.6], [0, 9.5], [7, 8], [-6, -8]]) {
+    const sim = new Simulation(practiceConfig("reflex-lesson", "reflex"));
+    const bot = new BotBrain(sim, 1, 0, "executor", 1);
+    sim.entities[0].feet.set(x, 0, z);
+    let at = -1;
+    for (let t = 0; t < 60 * 15 && at < 0; t++) {
+      const inputs: SimInput[] = [emptyInput()];
+      inputs[1] = bot.think(inputs);
+      const was = sim.entities[1].lunge.isActive;
+      sim.step(inputs, NOOP_EVENTS);
+      if (!was && sim.entities[1].lunge.isActive && sim.entities[1].lunge.execute) at = t / 60;
+    }
+    assert.ok(at > 0 && at < 12, `executor executes (player at ${x},${z}): ${at}s`);
+  }
 });
