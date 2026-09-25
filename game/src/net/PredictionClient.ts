@@ -187,7 +187,8 @@ function vec(x: number, y: number, z: number): THREE.Vector3 {
   return new THREE.Vector3(x, y, z);
 }
 
-function pose(s: EntitySnap): RemotePose {
+function pose(s: EntitySnap | undefined): RemotePose | null {
+  if (!s) return null;
   return {
     x: s[SNAP_IDX.x] as number, y: s[SNAP_IDX.y] as number, z: s[SNAP_IDX.z] as number,
     yaw: s[SNAP_IDX.yaw] as number, pitch: s[SNAP_IDX.pitch] as number,
@@ -196,7 +197,7 @@ function pose(s: EntitySnap): RemotePose {
 }
 
 function lerpPose(a: EntitySnap, b: EntitySnap, k: number): RemotePose {
-  const pa = pose(a), pb = pose(b);
+  const pa = pose(a)!, pb = pose(b)!;
   // Respawns/teleports: don't smear across the map.
   const jump = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z) > 6 || pa.alive !== pb.alive;
   if (jump) return pb;

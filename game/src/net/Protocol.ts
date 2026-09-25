@@ -3,34 +3,50 @@ import type { MatchConfig } from "../sim/MatchConfig";
 import type { KillHow, SimEvents } from "../sim/Simulation";
 import type { Entity } from "../sim/Entity";
 import type { Archetype, PackedInput } from "../sim/types";
+import type { ModeId } from "../content/Content";
 
 /**
  * Wire protocol between the STARCUT authority and its clients. Transport is
  * geckos.io (WebRTC data channels): inputs and snapshots ride the UNRELIABLE
  * channel (latest-wins), everything else is reliable.
  */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 export const DEFAULT_PORT = 9208;
 export const SNAP_EVERY = 3; // 60 Hz sim / 3 = 20 Hz snapshots
 export const PING_EVERY = 60; // 1 Hz RTT probe
-export const MAX_SEATS = 8;
+export const MAX_SEATS = 9;
 
-export type Queue = "ffa" | "team";
+/** Room setup the host controls (private rooms) or the playlist picks (Quick Play). */
+export interface RoomSetup {
+  mode: ModeId;
+  map: string;
+  /** Bot seats to fill (Quick Play fills every empty seat). */
+  bots: number;
+  /** Bot tier index into bots.json. */
+  difficulty: number;
+}
 
 // ---- client -> server ----------------------------------------------------------
 
 export interface HelloMsg {
   v: number;
+  /** Client build version (feedback/reports carry it). */
+  build: string;
+  /** Guest device token: the server loads (or creates) this player's profile. */
+  token: string;
+  /** Optional Supabase access token (signed-in players). */
+  auth?: string;
   name: string;
   archetype: Archetype;
-  /** quick = auto-join or create; host = new private room; join = by code. */
-  how: "quick" | "host" | "join";
-  queue: Queue;
+  /** quick = playlist match; host = new private room; join = by code; resume = reconnect. */
+  how: "quick" | "host" | "join" | "resume";
+  /** Quick Play mode picker ("any" = playlist). */
+  mode?: ModeId | "any";
   code?: string;
-  /** Bot difficulty for rooms this client creates (0..2). */
-  difficulty?: number;
-  /** Win condition for a hosted room: kill race (timed) or elimination (stocks). */
-  condition?: "timed" | "stocks";
+  /** Initial setup for a hosted room. */
+  setup?: Partial<RoomSetup>;
+  /** Reconnect token from a previous welcome. */
+  resume?: string;
 }
 
 export interface InputMsg {
@@ -48,6 +64,12 @@ export interface SpecMsg {
   z: number;
 }
 
+export interface FeedbackMsg {
+  note: string;
+  tags: string[];
+  build: string;
+}
+
 // ---- server -> client ----------------------------------------------------------
 
 export interface LobbySeat {
@@ -55,6 +77,11 @@ export interface LobbySeat {
   human: boolean;
   archetype: Archetype;
   team: number;
+  ready: boolean;
+  faction?: string | null;
+  /** The seat is held for a disconnected player (reconnect window). */
+  reserved?: boolean;
+  away?: boolean;
 }
 
 export interface WelcomeMsg {
@@ -62,15 +89,21 @@ export interface WelcomeMsg {
   room: string;
   seat: number; // -1 = spectator
   host: boolean;
-  queue: Queue;
   live: boolean;
   isPublic: boolean;
+  setup: RoomSetup;
+  /** Present this to reclaim the seat after a disconnect. */
+  resumeToken: string;
 }
 
 export interface LobbyMsg {
   seats: LobbySeat[];
   /** Seconds until auto-start (Quick Play), or -1 (host starts). */
   countdown: number;
+  setup: RoomSetup;
+  state: "lobby" | "live" | "results";
+  /** Rematch vote while in results. */
+  vote?: { yes: number; needed: number; secondsLeft: number };
 }
 
 export interface BeginMsg {
@@ -88,6 +121,8 @@ export interface SnapMsg {
   ack: number;
   /** Match state (Simulation.applyMatchState). */
   m: number[];
+  /** Mode objective state (flags / zone / rounds) — public. */
+  o?: number[];
   /** Entities this client may know about (interest-managed). */
   e: EntitySnap[];
   ev: NetEvent[];
@@ -101,10 +136,21 @@ export interface SnapMsg {
 
 export interface EndMsg {
   replayId: string;
+  mode: string;
+  map: string;
   winnerTeam: number;
   winnerId: number;
   ranking: { id: number; name: string; kills: number; deaths: number; team: number; archetype: Archetype; human: boolean }[];
   teamScores: number[];
+}
+
+/** Per-player progression after a match (sent only to that player). */
+export interface ProgressMsg {
+  newUnlocks: string[];
+  challengeProgress: { id: string; value: number; target: number }[];
+  warPoints: number;
+  faction: string | null;
+  botTier: number;
 }
 
 // ---- events over the wire ---------------------------------------------------------
@@ -130,7 +176,15 @@ export function recordingEvents(buf: NetEvent[]): SimEvents {
     resourceMax: (e) => p("rm", e),
     cascade: (e, left) => p("ca", e, null, left),
     shroud: (e, on) => p("sh", e, null, on ? 1 : 0),
-    matchEnd: () => buf.push(["me", -1, -1, 0])
+    matchEnd: () => buf.push(["me", -1, -1, 0]),
+    strikeLanded: (a, t) => p("sl", a, t),
+    flagTaken: (e, team) => p("ft", e, null, team),
+    flagDropped: (team, x, y, z) => buf.push(["fd", -1, team, `${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)}`]),
+    flagReturned: (team, by) => buf.push(["fr", by ? by.id : -1, team, 0]),
+    flagCaptured: (e, team) => p("fc", e, null, team),
+    zoneMoved: (index) => buf.push(["zm", -1, -1, index]),
+    roundStart: (round) => buf.push(["rn", -1, -1, round]),
+    roundEnd: (winner, round) => buf.push(["re", -1, winner, round])
   };
 }
 
@@ -141,9 +195,14 @@ const OWN_ACTION = new Set(["ls", "ss", "pa", "st", "mt"]);
 export function dispatchNetEvent(e: NetEvent, ev: SimEvents, entities: Entity[], mySeat: number): void {
   const [k, ai, bi, c] = e;
   if (OWN_ACTION.has(k) && ai === mySeat) return;
-  const A = entities[ai];
+  const A = ai >= 0 ? entities[ai] : undefined;
   const B = bi >= 0 ? entities[bi] : null;
   if (k === "me") { ev.matchEnd(); return; }
+  if (k === "fd") { const [x, y, z] = String(c).split(",").map(Number); ev.flagDropped(bi, x, y, z); return; }
+  if (k === "fr") { ev.flagReturned(bi, A ?? null); return; }
+  if (k === "zm") { ev.zoneMoved(c as number); return; }
+  if (k === "rn") { ev.roundStart(c as number); return; }
+  if (k === "re") { ev.roundEnd(bi, c as number); return; }
   if (!A) return;
   switch (k) {
     case "ls": ev.lungeStart(A); break;
@@ -163,6 +222,9 @@ export function dispatchNetEvent(e: NetEvent, ev: SimEvents, entities: Entity[],
     case "rm": ev.resourceMax(A); break;
     case "ca": ev.cascade(A, c as number); break;
     case "sh": ev.shroud(A, c === 1); break;
+    case "sl": if (B) ev.strikeLanded(A, B); break;
+    case "ft": ev.flagTaken(A, c as number); break;
+    case "fc": ev.flagCaptured(A, c as number); break;
   }
 }
 

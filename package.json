@@ -1,7 +1,7 @@
 {
   "name": "starcut-workspace",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.5.0",
   "type": "module",
   "workspaces": [
     "vendor/web-shell",

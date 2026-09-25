@@ -3,71 +3,108 @@ import { PredictionClient } from "./PredictionClient";
 import { clientLink, profileFromQuery } from "./LinkConditioner";
 import {
   DEFAULT_PORT, PROTOCOL_VERSION,
-  type BeginMsg, type EndMsg, type HelloMsg, type LobbyMsg, type SnapMsg, type SpecMsg, type WelcomeMsg
+  type BeginMsg, type EndMsg, type FeedbackMsg, type HelloMsg, type LobbyMsg, type ProgressMsg, type RoomSetup, type SnapMsg, type SpecMsg, type WelcomeMsg
 } from "./Protocol";
 import type { Archetype, SimInput } from "../sim/types";
 import type { SimEvents } from "../sim/Simulation";
+import type { ModeId } from "../content/Content";
+import { BETA } from "../content/Content";
 
 /**
- * Browser side of the online layer (Jetpack Arena's NetClient, ported):
+ * Browser side of the online layer:
  *  - geckos.io WebRTC data channel; inputs every sim tick, unreliable latest-wins;
  *  - authoritative snapshots ~20 Hz feed a PredictionClient (prediction,
  *    reconciliation, ~110 ms remote interpolation);
  *  - a LinkConditioner on both legs (F2 presets, `?lag=100&jitter=15&loss=1`);
+ *  - RECONNECT: a dropped connection retries with the room's resume token for
+ *    beta.reconnectWindowSec while a bot holds the seat;
  *  - connection DIAGNOSIS: "CONNECTING…" forever is the worst failure a tester
- *    can see. geckos signals over HTTP, then opens a data channel over UDP;
- *    those legs fail for different reasons (host down vs UDP ports closed), so
- *    we track which leg we're waiting on and turn a hang into a sentence.
+ *    can see, so a hang turns into a sentence (host down vs UDP blocked).
  */
 
-export type NetStatus = "connecting" | "lobby" | "playing" | "ended" | "error" | "closed";
+export type NetStatus = "connecting" | "lobby" | "playing" | "results" | "reconnecting" | "error" | "closed";
+export type RefusalCode = "version" | "noroom" | "full" | "resume" | "server" | "unreachable" | "";
 
 export class NetClient {
   status: NetStatus = "connecting";
   error = "";
+  errorCode: RefusalCode = "";
   seat = -1;
   room = "";
   host = false;
   isPublic = true;
-  queue: "ffa" | "team" = "ffa";
+  setup: RoomSetup | null = null;
+  resumeToken = "";
   lobby: LobbyMsg | null = null;
   begin: BeginMsg | null = null;
   end: EndMsg | null = null;
+  progress: ProgressMsg | null = null;
   pc: PredictionClient | null = null;
   joinedLive = false;
+  /** The server put a bot in my seat (idle / hidden tab). Any real input brings me back. */
+  away = false;
   onBegin: (() => void) | null = null;
   onEnd: ((e: EndMsg) => void) | null = null;
+  onProgress: ((p: ProgressMsg) => void) | null = null;
+  onFeedbackAck: ((ok: boolean) => void) | null = null;
 
   private channel: ClientChannel | null = null;
   private startedAt = 0;
   private handshook = false;
   private timedOut = false;
+  private hello: Omit<HelloMsg, "v"> | null = null;
+  private reconnectUntil = 0;
+  private retryT: ReturnType<typeof setTimeout> | null = null;
+  private closedByUs = false;
   /** Both legs pass through the shared client conditioner (F2 presets, ?lag=). */
   private readonly link = clientLink;
 
   constructor(readonly url: string, readonly port: number) {}
 
   private emit(event: string, data: unknown, reliable = false): void {
-    this.link.pass(() => this.channel?.emit(event, data as never, reliable ? { reliable: true } : undefined), reliable);
+    this.link.pass(() => {
+      try {
+        this.channel?.emit(event, data as never, reliable ? { reliable: true } : undefined);
+      } catch {
+        // channel closing
+      }
+    }, reliable);
   }
 
   private on(channel: ClientChannel, event: string, reliable: boolean, fn: (raw: unknown) => void): void {
-    channel.on(event, (raw) => this.link.pass(() => fn(raw), reliable));
+    channel.on(event, (raw) => {
+      if (channel !== this.channel) return; // a stale channel from before a reconnect
+      this.link.pass(() => fn(raw), reliable);
+    });
   }
 
   connect(hello: Omit<HelloMsg, "v">): void {
     const fromUrl = profileFromQuery(location.search);
     if (fromUrl) this.link.set(fromUrl);
+    this.hello = hello;
     this.status = "connecting";
+    this.open(hello);
+  }
+
+  private fail(code: RefusalCode, message: string): void {
+    this.status = "error";
+    this.errorCode = code;
+    this.error = message;
+  }
+
+  private open(hello: Omit<HelloMsg, "v">): void {
     this.startedAt = performance.now();
+    this.handshook = false;
+    this.timedOut = false;
     const channel = geckos({ url: this.url, port: this.port, iceServers: clientIceServers() });
     this.channel = channel;
 
     channel.onConnect((err) => {
+      if (channel !== this.channel) return;
       this.handshook = !err;
       if (err) {
-        this.status = "error";
-        this.error = String(err.message ?? err);
+        if (this.status === "reconnecting") this.scheduleRetry();
+        else this.fail("unreachable", `SERVER UNREACHABLE — ${String(err.message ?? err)}`);
         return;
       }
       this.emit("hello", { ...hello, v: PROTOCOL_VERSION }, true);
@@ -75,27 +112,40 @@ export class NetClient {
     this.on(channel, "welcome", true, (raw) => {
       const d = raw as WelcomeMsg;
       if (d.v !== PROTOCOL_VERSION) {
-        this.status = "error";
-        this.error = `VERSION MISMATCH — client ${PROTOCOL_VERSION}, server ${d.v}. Refresh the page.`;
+        this.fail("version", `VERSION MISMATCH — client ${PROTOCOL_VERSION}, server ${d.v}. Refresh the page.`);
         return;
       }
       this.seat = d.seat;
       this.room = d.room;
       this.host = d.host;
       this.isPublic = d.isPublic;
-      this.queue = d.queue;
+      this.setup = d.setup;
+      if (d.resumeToken) this.resumeToken = d.resumeToken;
       this.joinedLive = d.live;
-      this.status = "lobby";
+      this.reconnectUntil = 0;
+      this.away = false;
+      if (!d.live) this.status = "lobby";
     });
     this.on(channel, "host", true, (raw) => { this.host = !!(raw as { host: boolean }).host; });
-    this.on(channel, "lobby", true, (raw) => { this.lobby = raw as LobbyMsg; });
+    this.on(channel, "lobby", true, (raw) => {
+      const l = raw as LobbyMsg;
+      this.lobby = l;
+      this.setup = l.setup;
+      if (l.state === "lobby" && (this.status === "results" || this.status === "playing")) {
+        // The rematch vote lapsed (or a new round of the room): back to the room lobby.
+        this.status = "lobby";
+        this.pc = null;
+      }
+    });
     this.on(channel, "refused", true, (raw) => {
-      this.status = "error";
-      this.error = String((raw as { reason?: string }).reason ?? "REFUSED");
+      const r = raw as { reason?: string; code?: RefusalCode };
+      this.fail(r.code ?? "server", String(r.reason ?? "REFUSED"));
     });
     this.on(channel, "begin", true, (raw) => {
       const d = raw as BeginMsg;
       this.begin = d;
+      this.end = null;
+      this.progress = null;
       this.pc = new PredictionClient(d.config, this.seat);
       this.status = "playing";
       this.onBegin?.();
@@ -105,12 +155,52 @@ export class NetClient {
     this.on(channel, "ping", false, (raw) => this.emit("pong", { t: (raw as { t: number }).t }));
     this.on(channel, "end", true, (raw) => {
       this.end = raw as EndMsg;
-      this.status = "ended";
+      this.status = "results";
       this.onEnd?.(this.end);
     });
-    channel.onDisconnect(() => {
-      if (this.status !== "error" && this.status !== "ended") this.status = "closed";
+    this.on(channel, "progress", true, (raw) => {
+      this.progress = raw as ProgressMsg;
+      this.onProgress?.(this.progress);
     });
+    this.on(channel, "away", true, (raw) => { this.away = !!(raw as { away?: boolean }).away; });
+    this.on(channel, "feedbackAck", true, (raw) => this.onFeedbackAck?.(!!(raw as { ok?: boolean }).ok));
+    channel.onDisconnect(() => {
+      if (channel !== this.channel || this.closedByUs) return;
+      if (this.status === "error") return;
+      // Mid-room drop: try to reclaim the seat for the reconnect window.
+      if (this.resumeToken && (this.status === "playing" || this.status === "lobby" || this.status === "results" || this.status === "reconnecting")) {
+        if (this.status !== "reconnecting") {
+          this.status = "reconnecting";
+          this.reconnectUntil = performance.now() + BETA.reconnectWindowSec * 1000;
+        }
+        this.scheduleRetry();
+        return;
+      }
+      this.status = "closed";
+    });
+  }
+
+  private scheduleRetry(): void {
+    if (this.retryT) return;
+    if (performance.now() > this.reconnectUntil) {
+      this.fail("resume", "DISCONNECTED — the reconnect window passed.");
+      return;
+    }
+    this.retryT = setTimeout(() => {
+      this.retryT = null;
+      if (this.status !== "reconnecting" || !this.hello) return;
+      try {
+        this.channel?.close();
+      } catch {
+        // gone
+      }
+      this.open({ ...this.hello, how: "resume", resume: this.resumeToken });
+    }, 1500);
+  }
+
+  /** Seconds left to reconnect (for the overlay). */
+  get reconnectSecondsLeft(): number {
+    return Math.max(0, (this.reconnectUntil - performance.now()) / 1000);
   }
 
   /** What is this connection waiting on? Call every frame while connecting. */
@@ -120,16 +210,14 @@ export class NetClient {
     if (!this.handshook) {
       if (waited > 12) {
         this.timedOut = true;
-        this.status = "error";
-        this.error = "COULD NOT OPEN A CONNECTION — the server may be down, or its UDP ports closed";
+        this.fail("unreachable", "COULD NOT OPEN A CONNECTION — the server may be down, or its UDP ports closed");
         return "";
       }
       return waited > 4 ? `opening a data channel… ${waited.toFixed(0)}s` : "contacting the server…";
     }
     if (waited > 12) {
       this.timedOut = true;
-      this.status = "error";
-      this.error = "CONNECTED, BUT THE ROOM NEVER ANSWERED";
+      this.fail("server", "CONNECTED, BUT THE ROOM NEVER ANSWERED");
       return "";
     }
     return "connected — joining a room…";
@@ -154,14 +242,46 @@ export class NetClient {
     this.emit("pick", { archetype }, true);
   }
 
+  setReady(ready: boolean): void {
+    this.emit("ready", { ready }, true);
+  }
+
+  configure(setup: Partial<RoomSetup>): void {
+    this.emit("setup", setup, true);
+  }
+
+  vote(yes: boolean): void {
+    this.emit("vote", { yes }, true);
+  }
+
+  partyQueue(mode: ModeId | "any"): void {
+    this.emit("partyQueue", { mode }, true);
+  }
+
+  sendFeedback(msg: FeedbackMsg): void {
+    this.emit("feedback", msg, true);
+  }
+
+  /** A large reconciliation correction: the server logs it and keeps a clip. */
+  reportCorrection(tick: number, meters: number): void {
+    this.emit("corr", { tick, m: Math.round(meters * 100) / 100 }, true);
+  }
+
+  leave(): void {
+    this.emit("leave", {}, true);
+  }
+
   close(): void {
+    this.closedByUs = true;
+    if (this.retryT) clearTimeout(this.retryT);
+    this.retryT = null;
     try {
       this.channel?.close();
     } catch {
       // already gone
     }
     this.channel = null;
-    if (this.status !== "error" && this.status !== "ended") this.status = "closed";
+    if (this.status !== "error") this.status = "closed";
   }
 }
 

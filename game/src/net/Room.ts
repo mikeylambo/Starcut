@@ -1,34 +1,37 @@
 import * as THREE from "three";
-import { MATCH, NET } from "../config/tuning";
+import { NET } from "../config/tuning";
 import { BotBrain } from "../bots/BotBrain";
-import { BOT_NAMES, matchConfig, type MatchConfig } from "../sim/MatchConfig";
+import { BETA, BOTS, FACTIONS, MAPS, MODE_IDS, modeDef, PLAYLISTS, type ModeId } from "../content/Content";
+import { BOT_NAMES, matchConfig, teamForSeat, type Cosmetics, type MatchConfig, type MatchOverrides } from "../sim/MatchConfig";
 import { ReplayRecorder, applyCommand, newReplayId, type ReplayData, type SimCommand } from "../sim/Replay";
 import { Simulation } from "../sim/Simulation";
 import { ARCHETYPES, TICK, emptyInput, isValidPacked, unpackInput, type Archetype, type SimInput } from "../sim/types";
+import { buildTelemetry, isWinner, type KillSample, type TelemetryRecord } from "../meta/Telemetry";
+import { statsFromEntity, type MatchResultForProfile } from "../meta/Progression";
+import { warPointsFor } from "../meta/FactionWar";
 import { visibleSet, viewerFor, type Viewer } from "./Interest";
 import {
-  MAX_SEATS, PING_EVERY, SNAP_EVERY, compactSnap, recordingEvents,
-  type EndMsg, type HelloMsg, type LobbyMsg, type NetEvent, type Queue, type SnapMsg, type SpecMsg, type WelcomeMsg, PROTOCOL_VERSION
+  MAX_SEATS, PING_EVERY, PROTOCOL_VERSION, SNAP_EVERY, compactSnap, recordingEvents,
+  type EndMsg, type FeedbackMsg, type LobbyMsg, type NetEvent, type RoomSetup, type SnapMsg, type SpecMsg, type WelcomeMsg
 } from "./Protocol";
 
 /**
- * One authoritative match room — transport-agnostic so it runs identically in
- * the Node server (geckos.io peers) and in headless tests (fake peers with
- * simulated latency). Ported from Jetpack Arena's server/index.ts:
+ * One authoritative room — transport-agnostic so it runs identically in the
+ * Node server (geckos.io peers) and in headless tests. Ported from Jetpack
+ * Arena's server and grown for the closed beta:
  *
- *   - 60 Hz sim, 20 Hz snapshots, per-seat input acks, 1 Hz RTT probe;
- *   - unreliable latest-wins input (stale/out-of-order packets dropped), each
- *     packet carrying the previous two inputs so a lost one is filled in, behind
- *     an adaptive 1-4 deep jitter buffer; at most ONE input consumed per tick per
- *     seat, and a backlog is skipped forward (latest wins) rather than adding latency;
- *   - empty seats are server-side bots, so one human still gets a full match;
- *     a human joining mid-match takes a bot's seat, a leaver's seat goes back
- *     to a bot (that IS the rejoin path);
- *   - melee lag compensation: each seat's strikes rewind targets by its
- *     measured latency (capped at NET.rewindCapMs), applied as a recorded
- *     command so replays reproduce server outcomes exactly;
- *   - interest-managed snapshots (net/Interest.ts) — never full state;
- *   - input sanity: malformed / stale / flooding input is dropped.
+ *   - 60 Hz sim, 20 Hz interest-managed snapshots, per-seat acks, 1 Hz RTT probe;
+ *   - unreliable latest-wins input with redundancy + adaptive jitter buffer;
+ *   - melee lag compensation recorded as commands (replays reproduce outcomes);
+ *   - MEMBERS persist across matches (a private room is a party): lobby with
+ *     ready states, host-controlled setup (mode/map/bots/difficulty), rematch
+ *     vote on Results;
+ *   - bots fill empty seats; join-in-progress takes a bot seat;
+ *   - reconnect: a dropped player's seat is held (a bot drives it) for
+ *     beta.reconnectWindowSec and is handed back via their resume token;
+ *   - away: idle past beta.idleLimitSec (or a hidden tab) hands the seat to a bot
+ *     until the player is back;
+ *   - feedback clips and large-correction clips capture the replay so far.
  */
 
 export interface Peer {
@@ -36,151 +39,333 @@ export interface Peer {
   send(event: string, data: unknown, reliable: boolean): void;
 }
 
-interface SeatInfo {
+export interface MemberInfo {
+  profileId: string;
+  name: string;
+  archetype: Archetype;
+  faction: string | null;
+  cosmetics?: Cosmetics;
+  /** Player's adaptive bot tier (Quick Play rooms average their members'). */
+  botTier?: number;
+  build?: string;
+}
+
+interface Member extends MemberInfo {
   peer: Peer | null;
+  token: string;
+  ready: boolean;
+  seat: number; // -1 = not seated (lobby/results) or spectator
+  away: boolean;
+  reservedUntil: number;
+  lastInputAt: number;
+  clipsSent: number;
+}
+
+interface Seat {
+  member: Member | null;
+  brain: BotBrain | null;
   name: string;
   archetype: Archetype;
 }
 
+export interface ClipRecord {
+  kind: "feedback" | "correction";
+  room: string;
+  replay: ReplayData;
+  startStep: number;
+  note: string;
+  tags: string[];
+  build: string;
+  profileId: string;
+  name: string;
+  seat: number;
+  mode: string;
+  map: string;
+  tick: number;
+}
+
+export interface MatchEndInfo {
+  replay: ReplayData;
+  end: EndMsg;
+  telemetry: TelemetryRecord;
+  /** Per human member who finished seated. */
+  results: { peer: Peer | null; profileId: string; faction: string | null; result: MatchResultForProfile }[];
+}
+
 export interface RoomOptions {
-  difficulty?: number;
+  isPublic: boolean;
+  setup: RoomSetup;
   /** Fill empty seats with bots (tests can disable). */
   botFill?: boolean;
   seed?: number;
-  /** Win condition (timed kill race, or stocks elimination). */
-  condition?: "timed" | "stocks";
-  /** Called once when the match ends (the server persists the replay). */
-  onEnd?: (replay: ReplayData, end: EndMsg) => void;
+  /** Test aids (dev server only): shorter matches, fewer lives. */
+  overrides?: MatchOverrides;
+  version?: string;
+  onEnd?: (info: MatchEndInfo) => void;
+  onClip?: (clip: ClipRecord) => void;
+  /** Called when a member's resume token changes hands (server keeps a token index). */
+  onToken?: (token: string, room: Room | null) => void;
+  now?: () => number;
 }
 
-/** Adaptive jitter buffer: depth grows on starvation (max), decays after a calm spell. */
 const JITTER_MIN = 1;
 const JITTER_MAX = 4;
 const JITTER_DECAY_TICKS = 300;
-const MAX_INPUTS_PER_SEC = 150; // 60 expected; anything past this is a flood
+const MAX_INPUTS_PER_SEC = 150;
+const MAX_CLIPS_PER_MATCH = 3;
+
+export function sanitizeSetup(raw: Partial<RoomSetup> | undefined, base: RoomSetup): RoomSetup {
+  const mode = MODE_IDS.includes(raw?.mode as ModeId) ? (raw!.mode as ModeId) : base.mode;
+  const map = MAPS.some((m) => m.id === raw?.map) ? raw!.map! : base.map;
+  const seats = modeDef(mode).seats;
+  const bots = Math.max(0, Math.min(seats, Math.floor(Number(raw?.bots ?? base.bots))));
+  const difficulty = Math.max(0, Math.min(BOTS.tiers.length - 1, Math.floor(Number(raw?.difficulty ?? base.difficulty))));
+  return { mode, map, bots: Number.isFinite(bots) ? bots : base.bots, difficulty: Number.isFinite(difficulty) ? difficulty : base.difficulty };
+}
 
 export class Room {
-  state: "lobby" | "live" | "ended" = "lobby";
+  state: "lobby" | "live" | "results" = "lobby";
   hostId: string | null = null;
-  readonly seats: SeatInfo[];
+  setup: RoomSetup;
+  readonly members: Member[] = [];
   readonly spectators = new Map<Peer, SpecMsg>();
+  seats: Seat[] = [];
   sim: Simulation | null = null;
-  private brains: (BotBrain | null)[] = [];
   private recorder: ReplayRecorder | null = null;
   replayId = "";
   private latest: SimInput[] = [];
   private latestSeq: number[] = [];
-  /** Per-seat jitter buffer of inputs received but not yet applied. */
+  private appliedSeq: number[] = [];
   private inbuf: { q: number; i: SimInput }[][] = [];
   private jitterTarget: number[] = [];
   private refilling: boolean[] = [];
   private lastStarve: number[] = [];
-  private appliedSeq: number[] = [];
   private owd: number[] = [];
   private lagTicks: number[] = [];
   private inputBudget: number[] = [];
   private budgetT = 0;
   private stepCount = 0;
   private events: NetEvent[] = [];
+  private peerSpec = new Map<Peer, SpecMsg>();
   countdown = -1;
   endedAt = 0;
-  readonly createdAt = Date.now();
-  difficulty: number;
+  readonly createdAt: number;
   readonly rejected = { malformed: 0, stale: 0, flood: 0 };
+  private votes = new Set<string>();
+  private voteT = 0;
+  // telemetry
+  private kills: KillSample[] = [];
+  private rtt: number[] = [];
+  private disconnects = 0;
+  private reconnects = 0;
+  private afkTakeovers = 0;
+  private matchNumber = 0;
 
-  constructor(readonly code: string, readonly queue: Queue, readonly isPublic: boolean, private readonly opts: RoomOptions = {}) {
-    this.difficulty = opts.difficulty ?? 1;
-    this.seats = Array.from({ length: MAX_SEATS }, (_, i) => ({ peer: null, name: BOT_NAMES[i % BOT_NAMES.length], archetype: ARCHETYPES[i % 3] }));
+  constructor(readonly code: string, private readonly opts: RoomOptions) {
+    this.setup = sanitizeSetup(opts.setup, { mode: "tdm", map: "voidglass", bots: MAX_SEATS, difficulty: BOTS.defaultTier });
+    this.createdAt = this.now();
+  }
+
+  get isPublic(): boolean {
+    return this.opts.isPublic;
+  }
+
+  private now(): number {
+    return this.opts.now ? this.opts.now() : Date.now();
   }
 
   get humanCount(): number {
-    return this.seats.filter((s) => s.peer).length;
+    return this.members.filter((m) => m.peer).length;
   }
 
+  /** Can someone join as a player right now? */
   get hasFreeSeat(): boolean {
-    return this.seats.some((s) => !s.peer);
+    if (this.state === "live") return this.seats.some((s) => !s.member);
+    return this.members.length < modeDef(this.setup.mode).seats;
+  }
+
+  memberOf(peer: Peer): Member | undefined {
+    return this.members.find((m) => m.peer === peer);
   }
 
   seatOf(peer: Peer): number {
-    return this.seats.findIndex((s) => s.peer === peer);
+    return this.memberOf(peer)?.seat ?? -1;
   }
 
-  // ---- membership ------------------------------------------------------------
+  // ---- membership --------------------------------------------------------------
 
-  join(peer: Peer, hello: HelloMsg): void {
-    // Team queue: fill the team with fewer humans first, so a 2v2 of humans
-    // doesn't land on one side. FFA: first free seat.
-    let seat = -1;
-    if (this.queue === "team") {
-      const humans = [0, 1].map((t) => this.seats.filter((s, i) => s.peer && i % 2 === t).length);
-      const prefer = humans[0] <= humans[1] ? 0 : 1;
-      seat = this.seats.findIndex((s, i) => !s.peer && i % 2 === prefer);
-    }
-    if (seat < 0) seat = this.seats.findIndex((s) => !s.peer);
-
-    const welcome: WelcomeMsg = { v: PROTOCOL_VERSION, room: this.code, seat, host: false, queue: this.queue, live: this.state !== "lobby", isPublic: this.isPublic };
-    if (seat < 0) {
-      // Full of humans: spectate.
-      this.spectators.set(peer, { follow: -1, x: 0, y: 6, z: 0 });
-      peer.send("welcome", welcome, true);
-      if (this.sim) peer.send("begin", { config: this.sim.config, tick: this.sim.tick, replayId: this.replayId }, true);
-      return;
-    }
-    const s = this.seats[seat];
-    s.peer = peer;
-    s.name = hello.name;
-    s.archetype = hello.archetype;
+  /** Join (or rejoin) with a loaded profile. Returns the member's resume token. */
+  join(peer: Peer, info: MemberInfo): string {
     if (!this.hostId) this.hostId = peer.id;
-    welcome.host = this.hostId === peer.id;
-    peer.send("welcome", welcome, true);
-
-    if (this.sim) {
-      // Mid-match: take the stick back off the bot.
-      this.brains[seat] = null;
-      this.latest[seat] = emptyInput();
-      this.latestSeq[seat] = 0;
-      this.inbuf[seat] = [];
-      this.appliedSeq[seat] = 0;
-      this.owd[seat] = 0;
-      this.command({ type: "seat", seat, archetype: s.archetype, name: s.name, fresh: true });
+    const capacity = modeDef(this.setup.mode).seats;
+    const liveFull = this.state === "live" && !this.seats.some((s) => !s.member);
+    if ((this.state !== "live" && this.members.length >= capacity) || liveFull) {
+      this.spectators.set(peer, { follow: -1, x: 0, y: 6, z: 0 });
+      peer.send("welcome", this.welcomeFor(null, peer), true);
+      if (this.sim) peer.send("begin", { config: this.sim.config, tick: this.sim.tick, replayId: this.replayId }, true);
+      return "";
+    }
+    const m: Member = {
+      ...info,
+      peer,
+      token: `${this.code}-${Math.random().toString(36).slice(2, 12)}`,
+      ready: false,
+      seat: -1,
+      away: false,
+      reservedUntil: 0,
+      lastInputAt: this.now(),
+      clipsSent: 0
+    };
+    this.members.push(m);
+    this.opts.onToken?.(m.token, this);
+    if (this.state === "live" && this.sim) {
+      const seat = this.pickLiveSeat(m);
+      this.takeSeat(m, seat, true);
+      peer.send("welcome", this.welcomeFor(m, peer), true);
       peer.send("begin", { config: this.sim.config, tick: this.sim.tick, replayId: this.replayId }, true);
-    } else if (this.isPublic && this.countdown < 0) {
-      this.countdown = MATCH.quickStartDelay;
+    } else {
+      peer.send("welcome", this.welcomeFor(m, peer), true);
+      if (this.opts.isPublic && this.state === "lobby" && this.countdown < 0) this.countdown = modeDef(this.setup.mode) ? this.lobbyCountdown() : 5;
     }
     this.broadcastLobby();
+    return m.token;
+  }
+
+  private lobbyCountdown(): number {
+    return PLAYLISTS.quickplay.lobbyCountdownSec;
+  }
+
+  /** Reconnect with a resume token. True if the seat was reclaimed. */
+  resume(peer: Peer, token: string): boolean {
+    const m = this.members.find((x) => x.token === token);
+    if (!m || m.peer || (m.reservedUntil > 0 && m.reservedUntil < this.now())) return false;
+    m.peer = peer;
+    m.reservedUntil = 0;
+    m.away = false;
+    m.lastInputAt = this.now();
+    this.reconnects++;
+    if (!this.hostId) this.hostId = peer.id;
+    peer.send("welcome", this.welcomeFor(m, peer), true);
+    if (this.state === "live" && this.sim && m.seat >= 0) {
+      this.takeSeat(m, m.seat, true);
+      peer.send("begin", { config: this.sim.config, tick: this.sim.tick, replayId: this.replayId }, true);
+    }
+    this.broadcastLobby();
+    return true;
   }
 
   leave(peer: Peer): void {
     if (this.spectators.delete(peer)) return;
-    const seat = this.seatOf(peer);
-    if (seat < 0) return;
-    const s = this.seats[seat];
-    s.peer = null;
-    s.name = BOT_NAMES[seat % BOT_NAMES.length];
-    if (this.hostId === peer.id) this.hostId = this.seats.find((x) => x.peer)?.peer?.id ?? null;
-    if (this.sim && this.state === "live") {
-      this.latest[seat] = emptyInput();
-      this.owd[seat] = 0;
-      this.brains[seat] = this.makeBrain(seat);
-      this.command({ type: "seat", seat, archetype: s.archetype, name: s.name, fresh: true });
-      this.command({ type: "lag", seat, ticks: 0 });
-      this.lagTicks[seat] = 0;
+    const m = this.memberOf(peer);
+    if (!m) return;
+    m.peer = null;
+    if (this.state === "live" && m.seat >= 0) {
+      // Hold the seat for the reconnect window; a bot drives it meanwhile.
+      m.reservedUntil = this.now() + BETA.reconnectWindowSec * 1000;
+      this.disconnects++;
+      this.botTakes(m.seat);
+    } else {
+      this.removeMember(m);
+    }
+    if (this.hostId === peer.id) this.hostId = this.members.find((x) => x.peer)?.peer?.id ?? null;
+    this.broadcastLobby();
+  }
+
+  /** Remove a member for good (moving to another room, or reservation expired). */
+  removeMember(m: Member): void {
+    const i = this.members.indexOf(m);
+    if (i >= 0) this.members.splice(i, 1);
+    if (m.seat >= 0 && this.seats[m.seat]?.member === m) {
+      this.seats[m.seat].member = null;
+      if (this.state === "live") this.botTakes(m.seat);
+    }
+    this.opts.onToken?.(m.token, null);
+  }
+
+  /** Take a member out so they can join another room (party moves). */
+  detach(peer: Peer): MemberInfo | null {
+    const m = this.memberOf(peer);
+    if (!m) return null;
+    this.removeMember(m);
+    if (this.hostId === peer.id) this.hostId = this.members.find((x) => x.peer)?.peer?.id ?? null;
+    this.broadcastLobby();
+    const { profileId, name, archetype, faction, cosmetics, botTier, build } = m;
+    return { profileId, name, archetype, faction, cosmetics, botTier, build };
+  }
+
+  pick(peer: Peer, archetype: Archetype): void {
+    const m = this.memberOf(peer);
+    if (!m || !ARCHETYPES.includes(archetype)) return;
+    m.archetype = archetype;
+    if (this.state === "live" && this.sim && m.seat >= 0) {
+      this.seats[m.seat].archetype = archetype;
+      this.command({ type: "seat", seat: m.seat, archetype, name: m.name });
     }
     this.broadcastLobby();
   }
 
-  pick(peer: Peer, archetype: Archetype): void {
-    const seat = this.seatOf(peer);
-    if (seat < 0 || !ARCHETYPES.includes(archetype)) return;
-    this.seats[seat].archetype = archetype;
-    // Mid-match: takes effect now (resets that player's kit state; recorded).
-    if (this.sim) this.command({ type: "seat", seat, archetype, name: this.seats[seat].name });
+  setReady(peer: Peer, ready: boolean): void {
+    const m = this.memberOf(peer);
+    if (!m) return;
+    m.ready = !!ready;
+    this.broadcastLobby();
+  }
+
+  /** Host changes the room setup (lobby or results only). */
+  configure(peer: Peer, raw: Partial<RoomSetup>): void {
+    if (this.hostId !== peer.id || this.state === "live" || this.opts.isPublic) return;
+    this.setup = sanitizeSetup(raw, this.setup);
     this.broadcastLobby();
   }
 
   requestStart(peer: Peer): void {
-    if (this.state !== "lobby" || this.hostId !== peer.id) return;
+    if (this.state === "live" || this.hostId !== peer.id) return;
     this.begin();
+  }
+
+  vote(peer: Peer, yes: boolean): void {
+    if (this.state !== "results") return;
+    const m = this.memberOf(peer);
+    if (!m) return;
+    if (yes) this.votes.add(m.token);
+    else this.votes.delete(m.token);
+    this.checkVote();
+    this.broadcastLobby();
+  }
+
+  private votesNeeded(): number {
+    return Math.max(1, Math.ceil(this.humanCount * BETA.rematchMajority + 1e-9));
+  }
+
+  private checkVote(): void {
+    if (this.state === "results" && this.votes.size >= this.votesNeeded() && this.humanCount > 0) this.begin();
+  }
+
+  away(peer: Peer, isAway: boolean): void {
+    const m = this.memberOf(peer);
+    if (!m) return;
+    if (isAway) this.markAway(m);
+    else this.markBack(m);
+  }
+
+  private markAway(m: Member): void {
+    if (m.away) return;
+    m.away = true;
+    if (this.state === "live" && m.seat >= 0) {
+      this.afkTakeovers++;
+      this.botTakes(m.seat);
+    }
+    m.peer?.send("away", { away: true }, true);
+    this.broadcastLobby();
+  }
+
+  private markBack(m: Member): void {
+    if (!m.away) return;
+    m.away = false;
+    m.lastInputAt = this.now();
+    if (this.state === "live" && m.seat >= 0) this.takeSeat(m, m.seat, false);
+    m.peer?.send("away", { away: false }, true);
+    this.broadcastLobby();
   }
 
   spec(peer: Peer, msg: SpecMsg): void {
@@ -189,16 +374,77 @@ export class Room {
       x: Number(msg?.x) || 0, y: Number(msg?.y) || 0, z: Number(msg?.z) || 0
     };
     if (this.spectators.has(peer)) this.spectators.set(peer, clean);
-    else if (this.seatOf(peer) >= 0) this.peerSpec.set(peer, clean);
+    else if (this.memberOf(peer)) this.peerSpec.set(peer, clean);
   }
-  /** Seated players who are spectating (eliminated in a stocks match). */
-  private peerSpec = new Map<Peer, SpecMsg>();
+
+  // ---- seats ------------------------------------------------------------------
+
+  /** Choose a bot seat for a mid-match joiner (their faction's team in Clash, else the team with fewer humans). */
+  private pickLiveSeat(m: Member): number {
+    const cfg = this.sim!.config;
+    const free = this.seats.map((s, i) => ({ s, i })).filter(({ s }) => !s.member);
+    if (cfg.teamCount > 0) {
+      const humans = new Array(cfg.teamCount).fill(0);
+      this.seats.forEach((s, i) => { if (s.member) humans[teamForSeat(cfg.teamCount, i)]++; });
+      const preferred = this.factionTeam(m, cfg.teamCount);
+      const order = [...Array(cfg.teamCount).keys()].sort((a, b) => (a === preferred ? -1 : b === preferred ? 1 : humans[a] - humans[b]));
+      for (const t of order) {
+        const hit = free.find(({ i }) => teamForSeat(cfg.teamCount, i) === t);
+        if (hit) return hit.i;
+      }
+    }
+    return free[0].i;
+  }
+
+  private factionTeam(m: Member, teamCount: number): number {
+    if (teamCount !== 3 || !m.faction) return -1;
+    return FACTIONS.factions.findIndex((f) => f.id === m.faction);
+  }
+
+  private takeSeat(m: Member, seat: number, fresh: boolean): void {
+    const s = this.seats[seat];
+    s.member = m;
+    s.brain = null;
+    s.name = m.name;
+    s.archetype = m.archetype;
+    m.seat = seat;
+    this.latestSeq[seat] = 0;
+    this.appliedSeq[seat] = 0;
+    this.inbuf[seat] = [];
+    this.owd[seat] = 0;
+    if (fresh) {
+      this.latest[seat] = emptyInput();
+      this.command({ type: "seat", seat, archetype: m.archetype, name: m.name, fresh: true });
+    } else {
+      // Back from away: the client's press counters kept counting; continue from them.
+      const l = this.latest[seat];
+      this.command({ type: "seat", seat, archetype: m.archetype, name: m.name });
+      this.command({ type: "counters", seat, jump: l.jump, attack: l.attack, parry: l.parry, ability: l.ability });
+    }
+  }
+
+  private botTakes(seat: number): void {
+    const s = this.seats[seat];
+    if (!s || !this.sim) return;
+    s.brain = this.makeBrain(seat);
+    this.latest[seat] = emptyInput();
+    this.command({ type: "seat", seat, archetype: s.archetype, name: s.name, fresh: true });
+    this.command({ type: "lag", seat, ticks: 0 });
+    this.lagTicks[seat] = 0;
+  }
+
+  /** Is this seat driven by a present human right now? */
+  private humanDriving(i: number): boolean {
+    const m = this.seats[i]?.member;
+    return !!m && !!m.peer && !m.away;
+  }
 
   // ---- input + latency ---------------------------------------------------------
 
   input(peer: Peer, raw: unknown): void {
-    const seat = this.seatOf(peer);
-    if (seat < 0 || !this.sim) return;
+    const m = this.memberOf(peer);
+    const seat = m?.seat ?? -1;
+    if (!m || seat < 0 || !this.sim || this.state !== "live") return;
     const msg = raw as { q?: unknown; d?: unknown; r?: unknown };
     const redundant = Array.isArray(msg?.r) ? (msg.r as unknown[]).slice(0, 2) : [];
     if (!msg || typeof msg.q !== "number" || !Number.isInteger(msg.q) || !isValidPacked(msg.d) || !redundant.every(isValidPacked)) {
@@ -206,7 +452,7 @@ export class Room {
       return;
     }
     if (msg.q <= this.latestSeq[seat]) {
-      this.rejected.stale++; // unordered channel: drop stale
+      this.rejected.stale++;
       return;
     }
     if (++this.inputBudget[seat] > MAX_INPUTS_PER_SEC) {
@@ -214,31 +460,31 @@ export class Room {
       return;
     }
     const qd = this.inbuf[seat];
-    // Fill any gap from the redundant copies (oldest first), then this input.
     const candidates: [number, unknown][] = [[msg.q - 2, redundant[1]], [msg.q - 1, redundant[0]], [msg.q, msg.d]];
     for (const [q, d] of candidates) {
       if (d === undefined || q <= this.latestSeq[seat] || q <= this.appliedSeq[seat]) continue;
       qd.push({ q, i: unpackInput(d as never) });
     }
     this.latestSeq[seat] = msg.q;
-    // Backlog beyond the target depth: skip forward (latest wins) instead of adding latency.
     while (qd.length > this.jitterTarget[seat] + 2) qd.shift();
+    // Real activity (not the neutral input a hidden tab sends) keeps the player "present".
+    const last = unpackInput(msg.d as never);
+    if (last.moveX !== 0 || last.moveZ !== 0 || last.attack !== this.latest[seat].attack || last.parry !== this.latest[seat].parry || last.jump !== this.latest[seat].jump) {
+      m.lastInputAt = this.now();
+    }
+    if (m.away) this.markBack(m);
   }
 
   pong(peer: Peer, sentMs: number, nowMs: number): void {
     const seat = this.seatOf(peer);
     if (seat < 0) return;
     const rtt = nowMs - sentMs;
-    if (!sentMs || rtt < 0 || rtt > 2000) return; // clock nonsense or a stall, not latency
+    if (!sentMs || rtt < 0 || rtt > 2000) return;
     const half = rtt / 2;
     this.owd[seat] = this.owd[seat] ? this.owd[seat] * 0.7 + half * 0.3 : half;
+    this.rtt.push(Math.round(rtt));
   }
 
-  /**
-   * One input per tick from the seat's jitter buffer. Starving (nothing queued)
-   * repeats the last input and deepens the buffer so the next burst of jitter is
-   * absorbed; a calm spell shrinks it again to keep latency low.
-   */
   private consumeInput(i: number): SimInput {
     const buf = this.inbuf[i];
     const tick = this.sim?.tick ?? 0;
@@ -257,24 +503,88 @@ export class Room {
       this.refilling[i] = true;
       this.lastStarve[i] = tick;
     }
-    return this.latest[i]; // nothing new this tick: hold the last input
+    return this.latest[i];
   }
 
-  /** Input seq applied to a seat on the last step (acks). */
   appliedSeqOf(seat: number): number {
     return this.appliedSeq[seat] ?? 0;
   }
 
-  /** Test hook: pin a seat's measured one-way latency. */
   setLatency(seat: number, owdMs: number): void {
     this.owd[seat] = owdMs;
   }
 
+  // ---- feedback + correction clips ---------------------------------------------
+
+  private clip(m: Member | undefined, kind: ClipRecord["kind"], note: string, tags: string[], build: string, atTick?: number): ClipRecord | null {
+    if (!this.sim || !this.recorder) return null;
+    const replay = this.recorder.finish();
+    const clipTicks = Math.round(BETA.feedbackClipSec / TICK);
+    const endStep = atTick !== undefined ? Math.min(replay.length, atTick) : replay.length;
+    const rec: ClipRecord = {
+      kind,
+      room: this.code,
+      replay,
+      startStep: Math.max(0, endStep - clipTicks),
+      note: String(note ?? "").slice(0, 2000),
+      tags: (Array.isArray(tags) ? tags : []).map((t) => String(t).slice(0, 20)).slice(0, 6),
+      build: String(build ?? this.opts.version ?? "unknown").slice(0, 40),
+      profileId: m?.profileId ?? "",
+      name: m?.name ?? "",
+      seat: m?.seat ?? -1,
+      mode: this.setup.mode,
+      map: this.setup.map,
+      tick: this.sim.tick
+    };
+    this.opts.onClip?.(rec);
+    return rec;
+  }
+
+  /** F8 / pause-menu feedback: the last feedbackClipSec as a replay + note. */
+  feedback(peer: Peer, msg: FeedbackMsg): ClipRecord | null {
+    const m = this.memberOf(peer);
+    if (!m || m.clipsSent >= MAX_CLIPS_PER_MATCH * 3) return null;
+    m.clipsSent++;
+    return this.clip(m, "feedback", msg?.note ?? "", msg?.tags ?? [], msg?.build ?? "");
+  }
+
+  /** A client reported a large reconciliation correction: log it and keep a clip. */
+  correction(peer: Peer, raw: { tick?: number; m?: number }): ClipRecord | null {
+    const m = this.memberOf(peer);
+    const meters = Number(raw?.m);
+    if (!m || !(meters > BETA.correctionLogMeters) || m.clipsSent >= MAX_CLIPS_PER_MATCH) return null;
+    m.clipsSent++;
+    const tick = Math.max(0, Math.floor(Number(raw?.tick) || 0));
+    console.log(`[room ${this.code}] large correction ${meters.toFixed(2)} m for ${m.name} at tick ${tick}`);
+    return this.clip(m, "correction", `Auto: ${meters.toFixed(2)} m correction at tick ${tick}`, ["Bug", "auto-correction"], m.build ?? "", tick + 60);
+  }
+
   // ---- lifecycle ---------------------------------------------------------------
 
-  /** Advance lobby countdown (real seconds). Returns true while the room should live. */
+  /** Lobby countdown / results vote / reservation expiry (real seconds). */
   updateLobby(dt: number): void {
-    if (this.state !== "lobby" || this.countdown < 0) return;
+    const now = this.now();
+    for (const m of [...this.members]) {
+      if (!m.peer && m.reservedUntil > 0 && m.reservedUntil < now) this.removeMember(m);
+    }
+    if (this.state === "results") {
+      this.voteT -= dt;
+      if (this.voteT <= 0) {
+        this.state = "lobby";
+        this.votes.clear();
+        this.countdown = -1;
+        this.broadcastLobby();
+      }
+      return;
+    }
+    if (this.state === "live") {
+      // Idle detection: no real input for idleLimitSec -> a bot holds the seat.
+      for (const m of this.members) {
+        if (m.peer && !m.away && m.seat >= 0 && now - m.lastInputAt > BETA.idleLimitSec * 1000) this.markAway(m);
+      }
+      return;
+    }
+    if (this.countdown < 0) return;
     const before = Math.ceil(this.countdown);
     this.countdown -= dt;
     if (this.countdown <= 0) this.begin();
@@ -282,14 +592,56 @@ export class Room {
   }
 
   begin(): void {
-    if (this.state !== "lobby") return;
-    const config: MatchConfig = matchConfig(this.queue, this.seats.map((s) => s.archetype), this.seats.map((s) => s.name), this.opts.condition ?? "timed");
+    if (this.state === "live") return;
+    const mode = modeDef(this.setup.mode);
+    const humans = this.members.filter((m) => m.peer || m.reservedUntil > this.now());
+    const seatCount = this.opts.isPublic
+      ? mode.seats
+      : Math.max(2, Math.min(mode.seats, humans.length + this.setup.bots));
+    const teamCount = mode.teams;
+
+    // Seat humans with team balance (Clash: your faction's team when possible).
+    const seatOwner: (Member | null)[] = new Array(seatCount).fill(null);
+    for (const m of humans) {
+      m.seat = -1;
+      const free = seatOwner.map((o, i) => (o ? -1 : i)).filter((i) => i >= 0);
+      if (free.length === 0) break;
+      let pick = free[0];
+      if (teamCount > 0) {
+        const count = new Array(teamCount).fill(0);
+        seatOwner.forEach((o, i) => { if (o) count[teamForSeat(teamCount, i)]++; });
+        const pref = this.factionTeam(m, teamCount);
+        const order = [...Array(teamCount).keys()].sort((a, b) => (a === pref ? -1 : b === pref ? 1 : count[a] - count[b]));
+        pick = order.map((t) => free.find((i) => teamForSeat(teamCount, i) === t)).find((i) => i !== undefined) ?? free[0];
+      }
+      seatOwner[pick] = m;
+      m.seat = pick;
+    }
+    for (const m of this.members) if (!humans.includes(m) || m.seat < 0) m.seat = -1;
+
+    this.seats = seatOwner.map((m, i) => ({
+      member: m,
+      brain: null,
+      name: m ? m.name : BOT_NAMES[i % BOT_NAMES.length],
+      archetype: m ? m.archetype : ARCHETYPES[i % 3]
+    }));
+    const config: MatchConfig = matchConfig(
+      this.setup.mode, this.setup.map,
+      this.seats.map((s) => s.archetype), this.seats.map((s) => s.name),
+      { ...(this.opts.overrides ?? {}), seats: seatCount },
+      this.seats.map((s) => ({ faction: s.member?.faction ?? undefined, cosmetics: s.member?.cosmetics }))
+    );
     this.sim = new Simulation(config);
     this.replayId = newReplayId();
     this.recorder = new ReplayRecorder(config, this.replayId);
     this.state = "live";
+    this.matchNumber++;
     this.countdown = -1;
-    const n = config.seats.length;
+    this.votes.clear();
+    this.kills = [];
+    this.rtt = [];
+    this.disconnects = this.reconnects = this.afkTakeovers = 0;
+    const n = seatCount;
     this.latest = Array.from({ length: n }, () => emptyInput());
     this.latestSeq = new Array(n).fill(0);
     this.inbuf = Array.from({ length: n }, () => []);
@@ -300,14 +652,28 @@ export class Room {
     this.owd = new Array(n).fill(0);
     this.lagTicks = new Array(n).fill(0);
     this.inputBudget = new Array(n).fill(0);
-    this.brains = this.seats.map((s, i) => (s.peer || this.opts.botFill === false ? null : this.makeBrain(i)));
-    this.broadcast("begin", { config, tick: 0, replayId: this.replayId }, true);
-    for (const [p] of this.spectators) p.send("begin", { config, tick: 0, replayId: this.replayId }, true);
+    for (const m of this.members) {
+      m.clipsSent = 0;
+      m.lastInputAt = this.now();
+      m.ready = false;
+    }
+    this.seats.forEach((s, i) => {
+      if (!s.member || !s.member.peer || s.member.away) s.brain = this.opts.botFill === false && !s.member ? null : this.makeBrain(i);
+    });
+    const begin = { config, tick: 0, replayId: this.replayId };
+    // Everyone gets a fresh welcome (their seat changed) then the match.
+    for (const m of this.members) {
+      if (!m.peer) continue;
+      m.peer.send("welcome", this.welcomeFor(m, m.peer), true);
+      m.peer.send("begin", begin, true);
+    }
+    for (const [p] of this.spectators) p.send("begin", begin, true);
+    this.broadcastLobby();
   }
 
   private makeBrain(seat: number): BotBrain | null {
     if (!this.sim || this.opts.botFill === false) return null;
-    return new BotBrain(this.sim, seat, this.difficulty, null, (this.opts.seed ?? Date.now()) + seat);
+    return new BotBrain(this.sim, seat, this.setup.difficulty, null, (this.opts.seed ?? Date.now()) + seat + this.matchNumber * 31);
   }
 
   private command(c: SimCommand): void {
@@ -321,9 +687,8 @@ export class Room {
     const sim = this.sim;
     if (!sim || !this.recorder || this.state !== "live") return;
 
-    // Lag compensation from measured latency (recorded, so replays agree).
     for (let i = 0; i < this.seats.length; i++) {
-      const human = !!this.seats[i].peer;
+      const human = this.humanDriving(i);
       const ms = human ? Math.min(NET.rewindCapMs, this.owd[i] * NET.rewindOwdMul + (this.owd[i] > 0 ? NET.interpDelayMs * NET.rewindInterpMul : 0)) : 0;
       const ticks = Math.round(Math.min(NET.rewindCapMs, ms) / (TICK * 1000));
       if (ticks !== this.lagTicks[i]) {
@@ -332,16 +697,18 @@ export class Room {
       }
     }
 
-    const inputs = this.seats.map((s, i) => {
-      if (s.peer) {
-        return this.consumeInput(i);
-      }
-      return this.brains[i]?.think() ?? emptyInput();
-    });
+    const inputs = this.seats.map((s, i) => (this.humanDriving(i) ? this.consumeInput(i) : s.brain?.think() ?? emptyInput()));
     this.recorder.captureTick(inputs);
     const ev = recordingEvents(this.events);
     const rec = this.recorder;
-    sim.step(inputs, { ...ev, kill: (k, v, how) => { rec.kill(k.id, v.id, how); ev.kill(k, v, how); } });
+    sim.step(inputs, {
+      ...ev,
+      kill: (k, v, how) => {
+        rec.kill(k.id, v.id, how);
+        if (v.isPlayer) this.kills.push({ tick: sim.tick, killer: k.id, victim: v.id, killerKit: k.archetype, victimKit: v.archetype, how, x: Math.round(v.feet.x * 10) / 10, z: Math.round(v.feet.z * 10) / 10 });
+        ev.kill(k, v, how);
+      }
+    });
     this.stepCount++;
 
     this.budgetT += TICK;
@@ -351,53 +718,95 @@ export class Room {
     }
 
     if (this.stepCount % SNAP_EVERY === 0) this.sendSnapshots();
-    if (this.stepCount % PING_EVERY === 0) {
-      this.broadcast("ping", { t: nowMs }, false);
-    }
+    if (this.stepCount % PING_EVERY === 0) this.broadcast("ping", { t: nowMs }, false);
     if (sim.match.state === "over") this.end();
   }
 
   private end(): void {
     const sim = this.sim!;
-    this.sendSnapshots(true); // final state, reliable: Results must agree with the server
-    this.state = "ended";
-    this.endedAt = Date.now();
+    this.sendSnapshots(true);
+    this.state = "results";
+    this.endedAt = this.now();
+    this.voteT = BETA.rematchVoteSec;
+    this.votes.clear();
     const replay = this.recorder!.finish();
+    const ranking = sim.ranking();
     const end: EndMsg = {
       replayId: this.replayId,
+      mode: this.setup.mode,
+      map: this.setup.map,
       winnerTeam: sim.match.winnerTeam,
       winnerId: sim.match.winnerId,
       teamScores: [...sim.match.teamScores],
-      ranking: sim.ranking().map((e) => ({ id: e.id, name: e.name, kills: e.kills, deaths: e.deaths, team: e.team, archetype: e.archetype, human: !!this.seats[e.id]?.peer }))
+      ranking: ranking.map((e) => ({ id: e.id, name: e.name, kills: e.kills, deaths: e.deaths, team: e.team, archetype: e.archetype, human: !!this.seats[e.id]?.member }))
     };
-    this.opts.onEnd?.(replay, end);
-    this.broadcast("end", end, true);
+    const telemetry = buildTelemetry(sim, {
+      version: this.opts.version ?? "dev",
+      replayId: this.replayId,
+      kills: this.kills,
+      rtt: this.rtt,
+      humans: this.seats.map((s) => !!s.member),
+      disconnects: this.disconnects,
+      reconnects: this.reconnects,
+      afkTakeovers: this.afkTakeovers
+    });
+    const results: MatchEndInfo["results"] = [];
+    this.seats.forEach((s, i) => {
+      const m = s.member;
+      if (!m) return;
+      const e = sim.entities[i];
+      const won = isWinner(sim, i);
+      results.push({
+        peer: m.peer,
+        profileId: m.profileId,
+        faction: m.faction,
+        result: {
+          kit: e.archetype,
+          stats: statsFromEntity(e),
+          won,
+          online: true,
+          rank: ranking.indexOf(e),
+          of: ranking.length,
+          warPoints: m.faction ? warPointsFor(e, won) : 0,
+          quickPlay: this.opts.isPublic
+        }
+      });
+    });
+    this.opts.onEnd?.({ replay, end, telemetry, results });
+    for (const m of this.members) m.peer?.send("end", end, true);
     for (const [p] of this.spectators) p.send("end", end, true);
+    this.broadcastLobby();
   }
 
   /** Interest-managed per-client snapshots. */
   private sendSnapshots(reliable = false): void {
     const sim = this.sim!;
     const events = this.events.splice(0);
-    const m = [sim.match.state === "over" ? 1 : 0, sim.match.timeLeft, sim.match.elapsed, sim.match.teamScores[0], sim.match.teamScores[1], sim.match.winnerTeam, sim.match.winnerId];
+    const m = sim.matchArray();
+    const o = sim.rules.getState();
+    const GLOBAL = new Set(["ki", "me", "ft", "fd", "fr", "fc", "zm", "rn", "re"]);
     const snapFor = (viewer: Viewer, seat: number, lat: number) => {
       const vis = visibleSet(sim, viewer);
       if (seat >= 0) vis.add(seat);
       const e = sim.entities.filter((x) => vis.has(x.id)).map((x) => (x.id === seat ? x.getState() : compactSnap(x.getState())));
-      const ev = events.filter((x) => x[0] === "ki" || x[0] === "me" || x[1] === seat || vis.has(x[1]) || (x[2] >= 0 && vis.has(x[2]) && x[0] !== "rv"));
+      const ev = events.filter((x) => GLOBAL.has(x[0]) || x[1] === seat || vis.has(x[1]) || (x[2] >= 0 && vis.has(x[2]) && x[0] !== "rv"));
       const team = viewer.team;
       const k = sim.markers.filter((mk) => sim.entities[mk.owner]?.team === team).map((mk) => [mk.owner, mk.pos.x, mk.pos.y, mk.pos.z, mk.vel.x, mk.vel.y, mk.vel.z, mk.life]);
-      const msg: SnapMsg = { t: sim.tick, ack: seat >= 0 ? this.appliedSeq[seat] : 0, m, e, ev, lat: Math.round(lat), rw: seat >= 0 ? this.lagTicks[seat] ?? 0 : 0, k };
+      const msg: SnapMsg = { t: sim.tick, ack: seat >= 0 ? this.appliedSeq[seat] : 0, m, o, e, ev, lat: Math.round(lat), rw: seat >= 0 ? this.lagTicks[seat] ?? 0 : 0, k };
       return msg;
     };
-    this.seats.forEach((s, i) => {
-      if (!s.peer) return;
+    for (const mem of this.members) {
+      if (!mem.peer) continue;
+      const i = mem.seat;
+      if (i < 0) {
+        mem.peer.send("snap", snapFor(this.specViewer(this.peerSpec.get(mem.peer) ?? { follow: -1, x: 0, y: 6, z: 0 }), -1, 0), reliable);
+        continue;
+      }
       const self = sim.entities[i];
-      const spec = this.peerSpec.get(s.peer);
-      // An eliminated player spectates whoever they follow.
+      const spec = this.peerSpec.get(mem.peer);
       const viewer = self.eliminated && spec ? this.specViewer(spec) : viewerFor(sim, i);
-      s.peer.send("snap", snapFor(viewer, i, this.owd[i]), reliable);
-    });
+      mem.peer.send("snap", snapFor(viewer, i, this.owd[i]), reliable);
+    }
     for (const [p, spec] of this.spectators) p.send("snap", snapFor(this.specViewer(spec), -1, 0), reliable);
   }
 
@@ -407,26 +816,57 @@ export class Room {
     return { id: -1, team: -1, eye: new THREE.Vector3(spec.x, spec.y, spec.z) };
   }
 
-  lobbyMsg(): LobbyMsg {
+  private welcomeFor(m: Member | null, peer: Peer): WelcomeMsg {
     return {
-      seats: this.seats.map((s, i) => ({ name: s.name, human: !!s.peer, archetype: s.archetype, team: this.queue === "team" ? i % 2 : i })),
-      countdown: this.state === "lobby" ? this.countdown : -1
+      v: PROTOCOL_VERSION,
+      room: this.code,
+      seat: m ? m.seat : -1,
+      host: this.hostId === peer.id,
+      live: this.state === "live",
+      isPublic: this.opts.isPublic,
+      setup: this.setup,
+      resumeToken: m ? m.token : ""
     };
   }
 
-  private broadcastLobby(): void {
+  lobbyMsg(): LobbyMsg {
+    const mode = modeDef(this.setup.mode);
+    let seats: LobbyMsg["seats"];
+    if (this.state === "live" && this.sim) {
+      seats = this.seats.map((s, i) => ({
+        name: s.name, human: !!s.member, archetype: s.archetype, team: teamForSeat(mode.teams, i),
+        ready: false, faction: s.member?.faction ?? null, reserved: !!s.member && !s.member.peer, away: !!s.member?.away
+      }));
+    } else {
+      const planned = this.opts.isPublic ? mode.seats : Math.max(2, Math.min(mode.seats, this.members.length + this.setup.bots));
+      seats = [];
+      for (let i = 0; i < Math.max(planned, this.members.length); i++) {
+        const m = this.members[i];
+        seats.push(m
+          ? { name: m.name, human: true, archetype: m.archetype, team: teamForSeat(mode.teams, i), ready: m.ready, faction: m.faction, reserved: !m.peer, away: m.away }
+          : { name: "bot", human: false, archetype: ARCHETYPES[i % 3], team: teamForSeat(mode.teams, i), ready: true });
+      }
+    }
+    const msg: LobbyMsg = { seats, countdown: this.state === "lobby" ? this.countdown : -1, setup: this.setup, state: this.state };
+    if (this.state === "results") msg.vote = { yes: this.votes.size, needed: this.votesNeeded(), secondsLeft: Math.max(0, Math.ceil(this.voteT)) };
+    return msg;
+  }
+
+  broadcastLobby(): void {
     const msg = this.lobbyMsg();
-    this.broadcast("lobby", msg, true);
-    // hosts can change as people leave
-    for (const s of this.seats) if (s.peer) s.peer.send("host", { host: s.peer.id === this.hostId }, true);
+    for (const m of this.members) {
+      if (!m.peer) continue;
+      m.peer.send("lobby", msg, true);
+      m.peer.send("host", { host: m.peer.id === this.hostId }, true);
+    }
   }
 
   private broadcast(event: string, data: unknown, reliable: boolean): void {
-    for (const s of this.seats) s.peer?.send(event, data, reliable);
+    for (const m of this.members) m.peer?.send(event, data, reliable);
   }
 
-  /** Every member (seated or spectating). */
-  get members(): Peer[] {
-    return [...this.seats.filter((s) => s.peer).map((s) => s.peer!), ...this.spectators.keys()];
+  /** Every connected participant (members + spectators). */
+  get peers(): Peer[] {
+    return [...this.members.filter((m) => m.peer).map((m) => m.peer!), ...this.spectators.keys()];
   }
 }

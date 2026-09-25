@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GHOST, NET, PLAYER, REFLEX, RUSHER } from "../config/tuning";
 import { segmentBlocked } from "../world/Physics";
+import { inShadow, shadowSightRange } from "../world/Maps";
 import type { Entity } from "../sim/Entity";
 import type { Simulation } from "../sim/Simulation";
 import type { Archetype } from "../sim/types";
@@ -58,6 +59,8 @@ export function isVisibleTo(sim: Simulation, viewer: Viewer, e: Entity): boolean
   if (viewer.team >= 0 && e.revealedTeam === viewer.team && e.revealedUntil > sim.tick) return true;
   if (dist > NET.viewDistance) return false;
   if (dist <= audibleRadius(e)) return true;
+  // Shadow pockets: silent and in the dark beyond shadow range = not sent.
+  if (dist > shadowSightRange() && inShadow(c, sim.map)) return false;
   const eye = viewer.eye;
   if (!segmentBlocked(eye.x, eye.y, eye.z, c.x, c.y, c.z, sim.map.solids)) return true;
   const hy = e.feet.y + 1.7;
