@@ -665,6 +665,7 @@ export class Room {
       m.clipsSent = 0;
       m.lastInputAt = this.now();
       m.ready = false;
+      m.away = false; // each match starts present; idle detection re-arms
     }
     this.seats.forEach((s, i) => {
       if (!s.member || !s.member.peer || s.member.away) s.brain = this.opts.botFill === false && !s.member ? null : this.makeBrain(i);

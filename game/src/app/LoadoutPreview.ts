@@ -50,8 +50,8 @@ export class LoadoutPreview {
     this.view = new EntityView("player", kit, false);
     this.scene.add(this.view.group);
     this.bursts = new BurstPool(this.scene, 60);
-    this.camera.position.set(0, 1.6, 5.2);
-    this.camera.lookAt(0, 1.0, 0);
+    this.camera.position.set(0, 1.5, 7);
+    this.camera.lookAt(0, 0.95, 0);
     this.raf = requestAnimationFrame(this.tick);
   }
 

@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
   <meta name="theme-color" content="#05060a" />
   <title>STARCUT</title>
+  <script>
+    // Invite links (/join/CODE): hop to the app root with ?join=CODE so relative
+    // assets resolve on any static host that serves index.html for /join/*.
+    (function () {
+      var m = /^(.*\/)join\/([A-Za-z0-9]{4,6})\/?$/.exec(location.pathname);
+      if (!m) return;
+      var q = new URLSearchParams(location.search);
+      q.set("join", m[2].toUpperCase());
+      location.replace(m[1] + "?" + q.toString() + location.hash);
+    })();
+  </script>
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #05060a; }
     #game { position: fixed; inset: 0; }

@@ -1056,7 +1056,7 @@ export class StarcutRuntime {
     if (show && !this.perfEl) {
       this.perfEl = document.createElement("div");
       this.perfEl.style.cssText =
-        "position:fixed;right:10px;top:10px;z-index:2000;pointer-events:none;font:11px/1.45 ui-monospace,Menlo,monospace;" +
+        "position:fixed;right:10px;bottom:64px;z-index:2000;pointer-events:none;font:11px/1.45 ui-monospace,Menlo,monospace;" +
         "color:#bfe8ff;background:rgba(0,0,0,.55);padding:6px 9px;border-radius:6px;white-space:pre;";
       document.body.appendChild(this.perfEl);
     }
