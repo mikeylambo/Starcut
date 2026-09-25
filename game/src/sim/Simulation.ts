@@ -399,8 +399,12 @@ export class Simulation {
   /** Returns this tick's jump press. */
   private startActions(e: Entity, inp: SimInput, ev: SimEvents): boolean {
     const jump = pressed(inp.jump, e.prevJump);
-    if (!e.alive || e.staggered || e.doomed) return false; // a held hit may only parry
-    const attack = pressed(inp.attack, e.prevAttack) && this.rules.canAttack(e);
+    if (!e.alive || e.staggered || e.doomed) {
+      e.attackBuffer = 0;
+      return false; // a held hit may only parry
+    }
+    if (pressed(inp.attack, e.prevAttack)) e.attackBuffer = PLAYER.attackBufferTicks;
+    const attack = e.attackBuffer > 0 && this.rules.canAttack(e);
     const abilityPress = pressed(inp.ability, e.prevAbility);
     const abilityTaken = abilityPress && this.rules.onAbility(e, this, ev);
 
@@ -411,6 +415,7 @@ export class Simulation {
           e.swingT = REFLEX.swingWindup;
           e.swingHits = 0;
           e.graceT = 0;
+          e.attackBuffer = 0;
           ev.swingStart(e);
         }
       } else if (e.lunge.canStart()) {
@@ -422,6 +427,7 @@ export class Simulation {
         aim.normalize();
         const reach = e.archetype === "rusher" ? e.flow.value : 0;
         if (e.lunge.start(aim, e.eye, reach, this.tick)) {
+          e.attackBuffer = 0;
           e.vel.copy(aim).multiplyScalar(e.lunge.speed);
           e.lungeCuts = 0;
           e.graceT = 0;
@@ -438,6 +444,8 @@ export class Simulation {
         }
       }
     }
+
+    if (e.attackBuffer > 0) e.attackBuffer--;
 
     // Ghost signature: thrown marker.
     if (!abilityTaken && e.archetype === "ghost" && abilityPress && e.markerCd <= 0 && e.charge >= GHOST.markerCost) {
@@ -482,6 +490,19 @@ export class Simulation {
       }
     }
     integratePlayer(e, wishDir, jump, maxSpeedFor(e) * this.rules.speedMul(e), this.map, dt, dash);
+    if (e.alive && this.outOfBounds(e)) this.fellOut(e);
+  }
+
+  /** Backstop for any gap in a map: a body well outside the map's bounds is out of play. */
+  private outOfBounds(e: Entity): boolean {
+    const b = this.map.def.bounds;
+    const f = e.feet;
+    return f.y < -8 || f.y > 40 || f.x < b.min[0] - 6 || f.x > b.max[0] + 6 || f.z < b.min[1] - 6 || f.z > b.max[1] + 6;
+  }
+
+  private fellOut(e: Entity): void {
+    this.playerDeath(e, e);
+    if (this.config.condition === "rounds") e.eliminated = true;
   }
 
   private stepSwing(e: Entity, dt: number): void {

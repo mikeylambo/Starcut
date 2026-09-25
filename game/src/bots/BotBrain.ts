@@ -452,11 +452,12 @@ export class BotBrain {
       const g = navGraph(map);
       const from = nearestNode(g, me.feet, map);
       const to = nearestNode(g, goal, map);
-      let next = bfsNext(g, from, to);
-      if (g.nodes[from].distanceTo(me.feet) > 1.6 && !segmentBlocked(me.feet.x, me.feet.y + 1, me.feet.z, g.nodes[from].x, g.nodes[from].y + 1, g.nodes[from].z, map.solids)) {
-        next = from;
-      }
-      aim = g.nodes[next];
+      const next = bfsNext(g, from, to);
+      // Head for the next node when it's in reach; fall back to the nearest one only
+      // when the next is blocked (turning back to 'from' made bots dither on dense graphs).
+      const n = g.nodes[next];
+      const nextClear = !segmentBlocked(me.feet.x, me.feet.y + 1, me.feet.z, n.x, n.y + 1, n.z, map.solids);
+      aim = nextClear || g.nodes[from].distanceTo(me.feet) <= 1.6 ? n : g.nodes[from];
     }
     const d = new THREE.Vector3().subVectors(aim, me.feet).setY(0);
     return d.lengthSq() > 1e-6 ? d.normalize() : d;

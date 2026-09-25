@@ -374,7 +374,8 @@ class RoundsRules extends BaseRules {
     if (winner === -2) return;
     if (winner >= 0) m.teamScores[winner] += 1;
     ev.roundEnd(winner, this.round);
-    if (m.teamScores.some((s) => s >= sim.config.scoreLimit)) {
+    // A run of drawn rounds can't go on forever: cap at 2 x limit + 1 rounds.
+    if (m.teamScores.some((s) => s >= sim.config.scoreLimit) || this.round >= sim.config.scoreLimit * 2 + 1) {
       this.finish(sim, ev);
       return;
     }

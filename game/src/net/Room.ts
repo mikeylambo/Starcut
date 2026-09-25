@@ -118,7 +118,7 @@ export function sanitizeSetup(raw: Partial<RoomSetup> | undefined, base: RoomSet
   const mode = MODE_IDS.includes(raw?.mode as ModeId) ? (raw!.mode as ModeId) : base.mode;
   const map = MAPS.some((m) => m.id === raw?.map) ? raw!.map! : base.map;
   const seats = modeDef(mode).seats;
-  const bots = Math.max(0, Math.min(seats, Math.floor(Number(raw?.bots ?? base.bots))));
+  const bots = Math.max(0, Math.min(seats - 1, Math.floor(Number(raw?.bots ?? base.bots))));
   const difficulty = Math.max(0, Math.min(BOTS.tiers.length - 1, Math.floor(Number(raw?.difficulty ?? base.difficulty))));
   return { mode, map, bots: Number.isFinite(bots) ? bots : base.bots, difficulty: Number.isFinite(difficulty) ? difficulty : base.difficulty };
 }
@@ -471,8 +471,8 @@ export class Room {
     const last = unpackInput(msg.d as never);
     if (last.moveX !== 0 || last.moveZ !== 0 || last.attack !== this.latest[seat].attack || last.parry !== this.latest[seat].parry || last.jump !== this.latest[seat].jump) {
       m.lastInputAt = this.now();
+      if (m.away) this.markBack(m);
     }
-    if (m.away) this.markBack(m);
   }
 
   pong(peer: Peer, sentMs: number, nowMs: number): void {

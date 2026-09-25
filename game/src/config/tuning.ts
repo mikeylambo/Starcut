@@ -18,6 +18,8 @@
 
 export const PLAYER = {
   eyeHeight: 1.62,
+  /** A cut pressed up to this many ticks before the lunge/swing is ready still fires (input buffer; also keeps client and server agreeing when a press lands a tick early under jitter). */
+  attackBufferTicks: 6,
   /** Collision-box height (feet to crown). */
   bodyHeight: 1.8,
   radius: 0.42,

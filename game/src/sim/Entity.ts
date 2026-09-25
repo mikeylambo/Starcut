@@ -115,6 +115,8 @@ export class Entity {
   dashCd = 0;
   /** The current lunge began while Shrouded (a "Shroud strike"). */
   lungeFromShroud = false;
+  /** Ticks left on a buffered cut press (PLAYER.attackBufferTicks). */
+  attackBuffer = 0;
   parryAttempts = 0;
   graceParries = 0;
   executeParries = 0;
@@ -225,7 +227,8 @@ export class Entity {
       this.lungeCuts, b(this.maxLatched), this.name,
       this.parryPressTick, this.doomBy, this.doomTick, this.doomHow, b(this.doomExecute),
       this.carrying, this.dashT, this.dashCd, b(this.lungeFromShroud),
-      [this.parryAttempts, this.graceParries, this.executeParries, this.shroudKills, this.captures, this.zoneTime]
+      [this.parryAttempts, this.graceParries, this.executeParries, this.shroudKills, this.captures, this.zoneTime],
+      this.attackBuffer
     ];
   }
 
@@ -288,6 +291,7 @@ export class Entity {
     this.dashCd = s[i++] as number;
     this.lungeFromShroud = s[i++] === 1;
     [this.parryAttempts, this.graceParries, this.executeParries, this.shroudKills, this.captures, this.zoneTime] = s[i++] as number[];
+    this.attackBuffer = (s[i++] as number | undefined) ?? 0;
   }
 }
 

@@ -334,7 +334,9 @@ export class VoidglassRender {
     // Chamber A: ~16 x 20 room centred on z=0, player enters from z=+9.5.
     const w = 16, d = 20, h = 5.2, cz = 0;
     this.box(0, -0.5, cz, w, 1, d, this.floorMat); // floor
-    this.box(0, h + 0.5, cz, w, 1, d, this.ceilMat, false); // ceiling (non-solid so lunges up don't jam)
+    this.box(0, h + 0.5, cz, w, 1, d, this.ceilMat, false); // drawn ceiling (non-solid so lunges up don't jam)
+    // v5: an invisible lid just above it keeps upward lunges inside the map.
+    this.addSolid(0, h + 0.75, cz, w + 2, 1, d + 2);
     // Left wall plain, right wall is a Voidglass window onto space
     this.box(-w / 2 - 0.5, h / 2, cz, 1, h, d, this.wallMat);
     this.windowWall(true, w / 2 + 0.5, cz - d / 2, cz + d / 2, h, 1.1, 4.3, 4, 2.2);
@@ -392,6 +394,7 @@ export class VoidglassRender {
     const h = 4.6;
     this.box(0, -0.5, -14, 6, 1, 8, this.floorMat);
     this.box(0, h + 0.5, -14, 6, 1, 8, this.ceilMat, false);
+    this.addSolid(0, h + 0.75, -14, 8, 1, 8); // invisible lid (v5)
     this.box(-3.5, h / 2, -14, 1, h, 8, this.wallMat);
     this.box(3.5, h / 2, -14, 1, h, 8, this.wallMat);
     this.seam(0, 0.03, -14, 0.12, 0.06, 8, 0xb14cff);

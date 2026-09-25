@@ -44,6 +44,8 @@ export class DataMapRender implements MapRender {
     this.mats.set("ceiling", tiled(surfaceMaterial(dark, { metalness: 0.3, roughness: 0.9, tint: 0x5a6070 }), dark.tileMeters));
     this.mats.set("prop", tiled(surfaceMaterial(bulk, { metalness: 0.6, roughness: 0.55, tint: derelict ? 0x8a6a4a : 0x9aa6b8 }), 2));
     this.mats.set("window", new THREE.MeshStandardMaterial({ color: 0x6fb8ff, metalness: 0.2, roughness: 0.28, transparent: true, opacity: 0.12, depthWrite: false }));
+    // A faint glass lid over open-roofed maps (keeps lunges and zero-g drifts in).
+    this.mats.set("skylight", new THREE.MeshStandardMaterial({ color: 0x9fd0ff, metalness: 0.1, roughness: 0.2, transparent: true, opacity: 0.035, depthWrite: false, side: THREE.DoubleSide }));
     const trim = new THREE.MeshStandardMaterial({ color: 0x0a0c10, emissive: accent.clone(), emissiveIntensity: 1.3 });
     this.mats.set("trim", trim);
     this.pulse.push({ mat: trim, base: 1.3, hz: derelict ? 0.7 : 0.25 });
@@ -66,8 +68,8 @@ export class DataMapRender implements MapRender {
     if (tileM > 0) worldScaleBoxUVs(geo, sx, sy, sz, tileM);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(cx, cy, cz);
-    mesh.castShadow = this.gfx.shadows && solid && tag !== "window" && tag !== "floor";
-    mesh.receiveShadow = tag !== "window";
+    mesh.castShadow = this.gfx.shadows && solid && tag !== "window" && tag !== "floor" && tag !== "skylight";
+    mesh.receiveShadow = tag !== "window" && tag !== "skylight";
     this.group.add(mesh);
     // Window frames: a dark mullion grid so the glass reads as a wall.
     if (tag === "window") {
