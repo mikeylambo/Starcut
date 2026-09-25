@@ -1,122 +1,173 @@
-# Deploying STARCUT
+# Deploying STARCUT (closed beta)
 
 Two pieces:
 
 | Piece | What | Where |
 | --- | --- | --- |
 | **Client** | Static Vite build (`game/dist`) | Vercel (or any static host) |
-| **Authority** | Node server: rooms, 60 Hz sim, WebRTC data channels | A small VPS. It needs **UDP**, so serverless platforms won't work. |
+| **Authority** | Node server: rooms, 60 Hz sim, WebRTC data channels, profiles, feedback, admin page | One small Linux VPS. It needs **UDP**, so serverless platforms won't work. |
 
-Nothing is deployed yet. This is the runbook for when you do.
+**Staging and production run on the same VPS**, side by side, on separate ports and data directories:
 
-## Ports
+| Environment | pm2 app | TCP (signalling + HTTP) | UDP (data channels) | Data |
+| --- | --- | --- | --- | --- |
+| production | `starcut-production` | `9208` | `20000-20010` | `/var/lib/starcut/production` |
+| staging | `starcut-staging` | `9308` | `20100-20110` | `/var/lib/starcut/staging` |
 
-| Port | Proto | Used for |
-| --- | --- | --- |
-| `9208` (`PORT`) | TCP | WebRTC signalling (geckos.io), `GET /healthz`, `GET /replay/<id>`, `POST /report` |
-| `20000-20010` (`RTC_PORT_MIN`..`RTC_PORT_MAX`) | **UDP** | WebRTC data channels: all match traffic. geckos multiplexes, so 11 ports serve every room on the box. |
+Nothing needs Docker on your machine. You deploy with one command from your PC over ssh.
 
-Both must be open **on the VPS firewall *and* in the cloud provider's security list or
-network ACL**. The classic failure is `/healthz` answering while the game hangs on
-"opening a data channel…". That means the UDP range is blocked.
+## Recommendation: pm2 on the VPS (no Docker anywhere)
 
-## 1. Provision the VPS
+Two options work. **Use pm2.**
 
-Any 1 vCPU / 1 GB Linux box handles several rooms. The sim is about 0.1 ms per room-tick.
+- **pm2 + the Node bundle (recommended).** The VPS runs `npm ci && npm run build:server`
+  and pm2 keeps `dist-server/index.mjs` alive. It's the fewest moving parts. Staging and
+  production are just two pm2 apps. Deploys take about 30 s. Logs are `pm2 logs starcut-production`.
+- **Docker on the VPS (alternative).** Build the image on the VPS itself (see the end of this
+  file). Use this if the VPS already runs other containers. It's slower to deploy and makes
+  the UDP port mapping more fiddly.
+
+## 1. Provision the VPS (once)
+
+Any 1 vCPU / 1 GB box handles several rooms. The sim is about 0.1 ms per room-tick.
 
 ```bash
-# Ubuntu 24.04 example
-sudo apt-get update && sudo apt-get install -y docker.io git
-sudo usermod -aG docker $USER && newgrp docker
+# Ubuntu 24.04
+sudo apt-get update && sudo apt-get install -y git curl caddy
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs
+sudo npm install -g pm2 && pm2 startup systemd -u $USER --hp $HOME   # run the line it prints
 
-# host firewall
-sudo ufw allow 22/tcp
-sudo ufw allow 9208/tcp
-sudo ufw allow 20000:20010/udp
-sudo ufw allow 443/tcp          # only if you front it with TLS (step 3)
+sudo mkdir -p /srv/starcut /var/lib/starcut/production /var/lib/starcut/staging /etc/starcut
+sudo chown -R $USER /srv/starcut /var/lib/starcut
+
+# firewall: ssh, TLS proxy, and both UDP ranges
+sudo ufw allow 22/tcp && sudo ufw allow 443/tcp
+sudo ufw allow 20000:20010/udp && sudo ufw allow 20100:20110/udp
 sudo ufw enable
 ```
 
-Open the same ports in the provider's console. On Oracle Cloud that means the
-VCN security list and the instance's iptables. On AWS, the security group. On
-Hetzner or DO, the cloud firewall if you enabled one.
+Open the same ports in the cloud provider's firewall (security group / VCN security list).
+The classic failure is `/healthz` answering while the game hangs on "opening a data
+channel…". That means a UDP range is blocked.
 
-## 2. Build and run the authority container
+### Secrets: `/etc/starcut/<env>.env` (on the VPS only)
 
 ```bash
-git clone https://github.com/mikeylambo/Starcut.git && cd Starcut
-docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t starcut-authority .
-cp server/.env.example server/.env        # edit as needed
-docker run -d --name starcut --restart unless-stopped \
-  --env-file server/.env \
-  -p 9208:9208/tcp -p 20000-20010:20000-20010/udp \
-  -v starcut-data:/data \
-  starcut-authority
-
-curl http://localhost:9208/healthz        # {"ok":true,...,"protocol":4,"commit":"<sha>"}
+sudo tee /etc/starcut/production.env >/dev/null <<'ENV'
+ADMIN_PASSWORD=<long random string>
+CLIENT_URL=https://starcut.vercel.app
+CORS_ORIGIN=https://starcut.vercel.app
+STUN_URLS=stun:stun.l.google.com:19302
+# Optional Supabase (otherwise JSON files under /var/lib/starcut/<env>):
+# SUPABASE_URL=https://<project>.supabase.co
+# SUPABASE_SERVICE_ROLE_KEY=<service role key>
+# SUPABASE_ANON_KEY=<anon key>
+ENV
+sudo cp /etc/starcut/production.env /etc/starcut/staging.env   # then edit CLIENT_URL/CORS_ORIGIN for staging
+sudo chmod 600 /etc/starcut/*.env && sudo chown $USER /etc/starcut/*.env
 ```
 
-- Replays land in `/data/replays/<id>.json` and reports in `/data/reports.jsonl`, on the
-  `starcut-data` volume.
-- **STUN** (`STUN_URLS`) lets the server discover and advertise its public IP when the
-  VPS sits behind 1:1 NAT, which most clouds do. Keep it on. Use `NO_STUN=1` only on a LAN.
-- **TURN** slot: set `TURN_URL` / `TURN_USER` / `TURN_PASS` on the server and
-  `VITE_TURN_*` on the client once a relay exists. You only need it for players behind
-  symmetric NAT that can't reach the UDP range directly.
-- Without Docker: `npm ci && npm run build:server && node dist-server/index.mjs`
-  (Node 20+). The container runs exactly this bundle.
+The admin password and the Supabase service key are **only** in these files. They are
+never in the repo or in the client bundle. `npm run verify` fails if a secret name or test
+aid appears in either production bundle (`tools/check-prod.mjs`).
 
-## 3. TLS (needed once the client is on HTTPS)
+### TLS for signalling
 
-A client served from `https://…vercel.app` can't signal to a plain `http://` authority
-(mixed content). Put a TLS proxy in front of the signalling port. The UDP data channels
-are already DTLS-encrypted and bypass the proxy.
+A client on `https://…vercel.app` can't signal to a plain `http://` authority, so Caddy
+terminates TLS in front of each environment's TCP port. The UDP data channels are
+DTLS-encrypted and bypass the proxy.
 
 ```bash
-# DNS: authority.example.com -> VPS IP, then:
-sudo apt-get install -y caddy
-echo 'authority.example.com {
+# DNS: authority.example.com and staging-authority.example.com -> the VPS IP
+sudo tee /etc/caddy/Caddyfile >/dev/null <<'CADDY'
+authority.example.com {
   reverse_proxy 127.0.0.1:9208
-}' | sudo tee /etc/caddy/Caddyfile
+}
+staging-authority.example.com {
+  reverse_proxy 127.0.0.1:9308
+}
+CADDY
 sudo systemctl restart caddy
-curl https://authority.example.com/healthz
 ```
 
-A free DuckDNS hostname works if you don't own a domain. Jetpack Arena used this setup.
+A free DuckDNS hostname works if you don't own a domain.
 
-## 4. Point the client at it and deploy to Vercel
+## 2. Deploy (one command, from your PC)
 
-The client reads the authority at **build time**:
+Edit `deploy.config.json` once and set `"host": "you@your.vps.ip"`. Your ssh key must work
+(`ssh you@your.vps.ip` with no password). Then:
 
-| Env var | Example | Notes |
+```bash
+npm run deploy -- staging       # the branch you're on (must be pushed)
+npm run deploy -- production    # origin/main
+```
+
+Over ssh this checks out the exact pushed commit in `/srv/starcut/<env>` and runs `npm ci`
+and `npm run build:server`. It then reloads that environment's pm2 app and prints its
+`/healthz`. Git Bash on Windows provides `ssh`. `STARCUT_DEPLOY_HOST` overrides the host
+for a single run. On the first deploy of each environment, the script clones the repo.
+
+## 3. Client (Vercel)
+
+Two Vercel environments, from one project:
+
+| Vercel env | `VITE_AUTHORITY_URL` | Built from |
 | --- | --- | --- |
-| `VITE_AUTHORITY_URL` | `https://authority.example.com` | https with no port → 443 (the Caddy proxy). `http://1.2.3.4:9208` also works for an http-only client. |
-| `VITE_STUN_URLS` | `stun:stun.l.google.com:19302` | Comma-separated. |
-| `VITE_TURN_URL` / `_USER` / `_PASS` | | Later. |
+| Production | `https://authority.example.com` | `main` |
+| Preview (staging) | `https://staging-authority.example.com` | other branches |
 
-If unset, the client uses the page's own host on :9208. That's `localhost` in dev, and the
-host machine for LAN play. `?server=host:port` overrides everything, for testing.
+Also set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` if you enable sign-in. They are
+public by design. See `game/.env.example`. `vercel.json` already sets the build and the
+invite-link rewrite (`/join/CODE` → the game). `?server=host:port` overrides the authority
+for testing.
 
-Vercel: import the repo. `vercel.json` already sets `npm ci` → `npm run build` → `game/dist`.
-Add the env vars above under Project → Settings → Environment Variables, then redeploy.
-Locally: `cp game/.env.example game/.env.production.local` and run `npm run build`.
+## 4. Supabase (optional)
+
+Without it, profiles, the faction war, feedback, reports and telemetry live as JSON under
+the environment's data dir. That's fine for a closed beta. To use Supabase:
+
+1. Create a project. Apply `supabase/migrations/*.sql` with the Supabase CLI
+   (`supabase db push`) or the SQL editor. **RLS is on for every table.** Players can read
+   only their own profile. The faction standing is public. Everything else is server-only.
+2. Auth → Providers: enable **Discord** (client id/secret from the Discord developer
+   portal, redirect `https://<project>.supabase.co/auth/v1/callback`) and **Email** (magic
+   link). Add the client URLs to the redirect allow-list.
+3. Put `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_ANON_KEY` in
+   `/etc/starcut/<env>.env`. Put the URL and **anon** key in Vercel as `VITE_SUPABASE_*`.
+
+Replays stay on the VPS disk either way.
 
 ## 5. Verify end to end
 
-1. `https://authority.example.com/healthz` returns `ok`, and `commit` matches `git rev-parse --short HEAD`.
-   The client and the authority share the sim code, so they must be on the same commit.
-2. Open the Vercel URL, then **Quick Play**. The lobby should appear within a couple of seconds.
-3. Open it on a second machine on a different network and **Join by Code**.
-4. If step 2 hangs on "opening a data channel", the UDP range is blocked (step 1). If it
-   says "could not open a connection", the host is down or TCP 9208/443 is blocked.
+1. `https://authority.example.com/healthz` returns `ok`. Its `version` should match the
+   client's BETA watermark (bottom-left).
+2. Open the client and play **Quick Play**. The lobby appears within a couple of seconds.
+3. Open `https://authority.example.com/admin` and sign in with `ADMIN_PASSWORD`. Press F8
+   in a match, send feedback, and it shows in the inbox with a "Watch clip" link.
+4. If Quick Play hangs on "opening a data channel", a UDP range is blocked. If it says
+   "server unreachable", the host is down or TCP/443 is blocked.
 
-## Updating
+## Operating
+
+- Logs: `pm2 logs starcut-production` (large corrections, feedback and match ends are logged).
+- Restart: `pm2 restart starcut-staging`.
+- Data: `/var/lib/starcut/<env>`: `profiles/`, `replays/`, `feedback.jsonl`, `reports.jsonl`,
+  `telemetry.jsonl`, `war.json`. Back it up with `tar czf` from cron.
+- Protocol mismatches between client and server are refused with a "refresh the page"
+  message. Deploy server and client from the same commit.
+
+## Alternative: Docker on the VPS
+
+Build on the VPS, never locally:
 
 ```bash
-cd Starcut && git pull
+cd /srv/starcut/production && git pull
 docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t starcut-authority .
-docker rm -f starcut && docker run -d --name starcut ...   # same run line as above
+docker rm -f starcut-production; docker run -d --name starcut-production --restart unless-stopped \
+  --env-file /etc/starcut/production.env -e STARCUT_DATA=/data \
+  -p 127.0.0.1:9208:9208/tcp -p 20000-20010:20000-20010/udp \
+  -v /var/lib/starcut/production:/data starcut-authority
 ```
 
-Redeploy the client from the same commit. Protocol mismatches are refused with a
-"refresh the page" message.
+For staging, use `-p 127.0.0.1:9308:9208/tcp -p 20100-20110:20100-20110/udp -e RTC_PORT_MIN=20100 -e RTC_PORT_MAX=20110`
+with the staging env file and data dir.
