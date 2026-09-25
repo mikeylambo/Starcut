@@ -8,6 +8,7 @@ import { DEFAULT_PORT, PROTOCOL_VERSION, sanitizeCode, sanitizeName, type HelloM
 import { ARCHETYPES, TICK, type Archetype } from "../game/src/sim/types";
 import type { ReplayData } from "../game/src/sim/Replay";
 import { LinkConditioner, profileFromEnv } from "../game/src/net/LinkConditioner";
+import { MATCH } from "../game/src/config/tuning";
 
 /**
  * The STARCUT authority: one Node process, many independent rooms, each
@@ -24,6 +25,9 @@ import { LinkConditioner, profileFromEnv } from "../game/src/net/LinkConditioner
  */
 
 const PORT = Number(process.env.PORT ?? DEFAULT_PORT);
+// Testing aid: shorter matches (e.g. STARCUT_MATCH_SECONDS=60). Server tuning is authoritative.
+if (process.env.STARCUT_MATCH_SECONDS) MATCH.timeLimitSec = Number(process.env.STARCUT_MATCH_SECONDS) || MATCH.timeLimitSec;
+if (process.env.STARCUT_STOCKS) MATCH.stocks = Number(process.env.STARCUT_STOCKS) || MATCH.stocks;
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DATA = path.resolve(process.env.STARCUT_DATA ?? path.join(here, "data"));
 const REPLAYS = path.join(DATA, "replays");

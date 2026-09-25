@@ -290,10 +290,10 @@ export const VIEWMODEL = {
   ghostOffsetZ: 0.02,
   ghostFov: 90,
   /** Reflex twin blades: smaller, and spread symmetric either side of centre. */
-  reflexScale: 0.34,
-  reflexSpread: 0.27,
-  reflexOffsetY: -0.04,
-  reflexOffsetZ: 0.04,
+  reflexScale: 0.27,
+  reflexSpread: 0.25,
+  reflexOffsetY: -0.05,
+  reflexOffsetZ: 0.02,
   reflexFov: 90,
   /** Idle breathing sway (m) and rate (Hz). */
   swayAmount: 0.006,

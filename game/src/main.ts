@@ -250,6 +250,8 @@ async function boot(): Promise<void> {
     tuning
   });
   runtime.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio);
+  // ?dev=1 only: a handle for scripted browser checks (never in normal play).
+  if (DEV) (window as unknown as { __starcut: unknown }).__starcut = runtime;
 
   // Track the mode actually launched (onboarding may reroute it).
   shell.events.on("level:loaded", ({ id }) => {

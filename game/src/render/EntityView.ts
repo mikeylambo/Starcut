@@ -65,8 +65,8 @@ export class EntityView {
     const practiceHue = kind === "dummy" ? 0x37d6ff : 0xff5a3c;
     const hue = kind === "player" ? archetypeHue(archetype) : practiceHue;
     this.hue.set(hue);
-    this.bodyMat = new THREE.MeshStandardMaterial({ color: 0x3a4352, emissive: new THREE.Color(hue), emissiveIntensity: 0.03, roughness: 0.32, metalness: 0.8, transparent: true });
-    this.coreMat = new THREE.MeshStandardMaterial({ color: 0x05070b, emissive: new THREE.Color(hue), emissiveIntensity: 1.1, roughness: 0.4, transparent: true });
+    this.bodyMat = new THREE.MeshStandardMaterial({ color: 0x3a4352, emissive: new THREE.Color(hue), emissiveIntensity: 0.03, roughness: 0.32, metalness: 0.8, transparent: kind === "player" });
+    this.coreMat = new THREE.MeshStandardMaterial({ color: 0x05070b, emissive: new THREE.Color(hue), emissiveIntensity: 1.1, roughness: 0.4, transparent: kind === "player" });
     this.build();
   }
 
@@ -142,6 +142,14 @@ export class EntityView {
     g.traverse((o) => { if (o instanceof THREE.Mesh) o.castShadow = this.castShadow && o !== this.revealRing; });
   }
 
+  private setTransparent(on: boolean): void {
+    for (const m of [this.bodyMat, this.coreMat]) {
+      if (m.transparent === on) continue;
+      m.transparent = on;
+      m.needsUpdate = true;
+    }
+  }
+
   /** Killed: hold the frame (hitstop), then dissolve. */
   killed(holdFor: number): void {
     this.frozenFor = holdFor;
@@ -167,6 +175,7 @@ export class EntityView {
     if (this.pendingDissolve) {
       this.pendingDissolve = false;
       this.dissolveT = FX.dissolveTime;
+      this.setTransparent(true);
     }
     if (this.dissolveT > 0) {
       this.dissolveT = Math.max(0, this.dissolveT - dt);
@@ -178,6 +187,7 @@ export class EntityView {
       this.coreMat.emissiveIntensity = 3 + (1 - k) * 6;
       return;
     }
+    if (this.kind !== "player" && this.bodyMat.transparent) this.setTransparent(false); // opaque sorting for targets
     this.group.scale.set(1, 1, 1);
     this.group.visible = s.present && s.alive;
     if (!this.group.visible) return;

@@ -78,7 +78,10 @@ export class Presentation {
 
   /** The entity the camera is on (me, or who I'm following). */
   get focus(): Entity | null {
-    return this.me ?? (this.src && this.followId >= 0 ? this.src.sim.entities[this.followId] ?? null : null);
+    const me = this.me;
+    // An eliminated player spectates: the camera, audio and HUD follow the target.
+    if (me && !me.eliminated) return me;
+    return this.src && this.followId >= 0 ? this.src.sim.entities[this.followId] ?? null : me;
   }
 
   private isFocus(e: Entity): boolean {

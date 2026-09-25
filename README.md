@@ -143,6 +143,9 @@ never dropped or reordered.
   bigger means prediction diverged.
 
 Other dev params: `?quality=low|high`, `?spawn=x,y,z,yawDeg` (practice), `?server=host:port`.
+Test aids: `STARCUT_MATCH_SECONDS=75` and `STARCUT_STOCKS=1` on the server for short
+matches and elimination checks. With `?dev=1`, `window.__starcut` exposes the runtime for
+scripted browser checks.
 
 ### Feel (presentation only)
 `tuning.ts` → `VIEWMODEL` holds scale, offset and FOV per kit, idle sway, lunge kick

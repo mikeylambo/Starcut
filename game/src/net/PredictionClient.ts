@@ -48,6 +48,8 @@ export class PredictionClient {
   /** Largest correction seen (m). */
   maxCorrection = 0;
   private correctionTimes: number[] = [];
+  /** Last few large corrections (dev diagnosis). */
+  readonly correctionLog: { t: number; m: number; from: number[]; to: number[]; pending: number }[] = [];
   /** Largest own-position correction applied by the last reconcile (m) — smoothing + diagnostics. */
   lastCorrection = 0;
   private lastInput: SimInput = emptyInput();
@@ -139,6 +141,10 @@ export class PredictionClient {
           this.corrections++;
           this.maxCorrection = Math.max(this.maxCorrection, this.lastCorrection);
           this.correctionTimes.push(this.lastSnapAt);
+          if (this.lastCorrection > 1) {
+            this.correctionLog.push({ t: snap.t, m: this.lastCorrection, from: before.toArray(), to: me.feet.toArray(), pending: this.pending.length });
+            if (this.correctionLog.length > 8) this.correctionLog.shift();
+          }
         }
       }
     }
